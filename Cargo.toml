@@ -1,0 +1,29 @@
+[package]
+name = "aleo-operator"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+#snarkvm = { path = "../../src/snarkVM" }
+snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", rev = "6812908b" }
+snarkos = { path = "../../src/snarkOS" }
+snarkos-storage = { path = "../../src/snarkOS/storage" }
+#snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "53a22610" }
+#snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "53a22610" }
+structopt = "0.3.26"
+tracing = "0.1.29"
+tracing-subscriber = "0.3.7"
+futures-util = "0.3.19"
+rand = "0.8.4"
+tokio-util = "0.6.9"
+tokio-stream = "0.1.8"
+
+[dependencies.tokio]
+version = "1.16.1"
+features = [
+    "rt-multi-thread",
+    "macros",
+    "sync"
+]
