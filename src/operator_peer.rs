@@ -1,29 +1,38 @@
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
 use futures_util::sink::SinkExt;
-use rand::thread_rng;
-use rand::Rng;
-use snarkos::environment::Prover;
-use snarkos::helpers::{NodeType, State};
-use snarkos::{Data, Environment, Message, OperatorTrial};
+use rand::{thread_rng, Rng};
+use snarkos::{
+    helpers::{NodeType, State},
+    Data,
+    Environment,
+    Message,
+    OperatorTrial,
+};
 use snarkos_storage::BlockLocators;
-use snarkvm::dpc::testnet2::Testnet2;
-use snarkvm::dpc::{Address, BlockHeader};
-use snarkvm::traits::Network;
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{mpsc, Mutex};
-use tokio::task;
-use tokio::time::{sleep, timeout};
+use snarkvm::{
+    dpc::{testnet2::Testnet2, BlockHeader},
+    traits::Network,
+};
+use tokio::{
+    net::TcpStream,
+    sync::{
+        mpsc,
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
+    task,
+    time::{sleep, timeout},
+};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
 
+use crate::ServerMessage;
+
 pub struct Node {
     operator: String,
-    router: Arc<Sender<OperatorMessage>>,
+    sender: Sender<OperatorMessage>,
     receiver: Arc<Mutex<Receiver<OperatorMessage>>>,
 }
 
@@ -33,28 +42,22 @@ pub struct OperatorMessage {
 }
 
 impl Node {
-    pub fn init(operator: String) -> Arc<Self> {
-        let (router_tx, router_rx) = mpsc::channel(1024);
-        Arc::new(Self {
+    pub fn init(operator: String) -> Self {
+        let (sender, receiver) = mpsc::channel(1024);
+        Self {
             operator,
-            router: Arc::new(router_tx),
-            receiver: Arc::new(Mutex::new(router_rx)),
-        })
+            sender,
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
     }
 
-    pub fn router(&self) -> Arc<Sender<OperatorMessage>> {
-        self.router.clone()
-    }
-
-    pub fn receiver(&self) -> Arc<Mutex<Receiver<OperatorMessage>>> {
-        self.receiver.clone()
+    pub fn sender(&self) -> Sender<OperatorMessage> {
+        self.sender.clone()
     }
 }
 
-pub fn start(
-    node: Arc<Node>,
-    receiver: Arc<Mutex<Receiver<OperatorMessage>>>,
-) {
+pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
+    let receiver = node.receiver;
     task::spawn(async move {
         loop {
             info!("Connecting to operator...");
@@ -62,8 +65,7 @@ pub fn start(
                 Ok(socket) => match socket {
                     Ok(socket) => {
                         info!("Connected to {}", node.operator);
-                        let mut framed =
-                            Framed::new(socket, Message::<Testnet2, OperatorTrial<Testnet2>>::PeerRequest);
+                        let mut framed = Framed::new(socket, Message::<Testnet2, OperatorTrial<Testnet2>>::PeerRequest);
                         let challenge = Message::ChallengeRequest(
                             OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                             Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
@@ -102,7 +104,7 @@ pub fn start(
                                             }
                                             Message::ChallengeResponse(..) => {
                                                 let ping = Message::<Testnet2, OperatorTrial<Testnet2>>::Ping(
-                                                    12,
+                                                    OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                                                     Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
                                                     NodeType::PoolServer,
                                                     State::Ready,
@@ -130,7 +132,12 @@ pub fn start(
                                             Message::UnconfirmedBlock(..) => {}
                                             Message::NewBlockTemplate(template) => {
                                                 if let Ok(template) = template.deserialize().await {
-                                                    error!("Received new block template: {}", template.block_height());
+                                                    let block_height = template.block_height();
+                                                    if let Err(e) = server_sender.send(ServerMessage::NewBlockTemplate(template)).await {
+                                                        error!("Error sending new block template to pool server: {}", e);
+                                                    } else {
+                                                        debug!("Sent new block template {} to pool server", block_height);
+                                                    }
                                                 } else {
                                                     error!("Error deserializing block template");
                                                 }

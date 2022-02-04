@@ -1,14 +1,26 @@
+mod accounting;
+mod connection;
+mod db;
+mod message;
 mod operator_peer;
 mod server;
 
-use std::net::SocketAddr;
+use futures::stream::StreamExt;
+use signal_hook::consts::{SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGUSR1};
+use signal_hook_tokio::Signals;
 use structopt::StructOpt;
+use tokio::sync::mpsc::Sender;
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
-use crate::operator_peer::Node;
-use crate::server::Server;
+
+use crate::{
+    accounting::{Accounting, AccountingMessage},
+    operator_peer::Node,
+    server::{Server, ServerMessage},
+};
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "operator", about = "Aleo standalone operator", setting = structopt::clap::AppSettings::ColoredHelp)]
+#[structopt(name = "pool_server", about = "Aleo mining pool server", setting = structopt::clap::AppSettings::ColoredHelp)]
 struct Opt {
     /// Full operator node address
     #[structopt(short = "o", long = "operator")]
@@ -45,26 +57,63 @@ async fn main() {
     // );
     if let Some(log) = opt.log {
         let file = std::fs::File::create(log).unwrap();
-        let file = tracing_subscriber::fmt::layer()
-            .with_writer(file)
-            .with_ansi(false);
+        let file = tracing_subscriber::fmt::layer().with_writer(file).with_ansi(false);
         tracing::subscriber::set_global_default(subscriber.with(file))
             .expect("unable to set global default subscriber");
     } else {
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("unable to set global default subscriber");
+        tracing::subscriber::set_global_default(subscriber).expect("unable to set global default subscriber");
     }
 
     let operator = opt.operator;
     let port = opt.port;
-    let debug = opt.debug;
+
+    let accounting = Accounting::init();
 
     let node = Node::init(operator);
 
-    let server = Server::init(port, node.router().clone());
+    let server = Server::init(port, node.sender(), accounting.sender()).await;
 
-    crate::operator_peer::start(node.clone(), node.receiver());
+    crate::operator_peer::start(node, server.sender());
+
+    match Signals::new(&[SIGABRT, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGTSTP]) {
+        Ok(signals) => {
+            tokio::spawn(handle_signals(signals, accounting, server.sender()));
+        }
+        Err(err) => {
+            error!("Unable to register signal handlers: {:?}", err);
+            std::process::exit(1);
+        }
+    }
 
     std::future::pending::<()>().await;
+}
 
+async fn handle_signals(mut signals: Signals, accounting: Accounting, server_sender: Sender<ServerMessage>) {
+    while let Some(signal) = signals.next().await {
+        info!("Received signal: {:?}", signal);
+        let accounting_sender = accounting.sender();
+        match signal {
+            SIGABRT => {
+                info!("Trying to salvage states before aborting...");
+                let _ = accounting_sender.send(AccountingMessage::Exit).await;
+                accounting.wait_for_exit().await;
+                let _ = server_sender.send(ServerMessage::Exit).await;
+                std::process::abort();
+            }
+            SIGTERM | SIGINT | SIGHUP | SIGQUIT => {
+                info!("Saving states before exiting...");
+                let _ = accounting_sender.send(AccountingMessage::Exit).await;
+                accounting.wait_for_exit().await;
+                let _ = server_sender.send(ServerMessage::Exit).await;
+                std::process::exit(0);
+            }
+            SIGUSR1 => {
+                debug!("Should do something useful here...");
+            }
+            SIGTSTP => {
+                warn!("Suspending is not supported");
+            }
+            _ => unreachable!(),
+        }
+    }
 }
