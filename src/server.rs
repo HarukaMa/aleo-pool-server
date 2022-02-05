@@ -369,10 +369,12 @@ impl Server {
                             latest_block_height
                         );
                         send_result(sender, false, Some("Stale proof".to_string())).await;
+                        return;
                     }
                     if prover_state.write().await.seen_nonce(nonce) {
                         warn!("Received duplicate nonce from prover {}", prover_state.read().await);
                         send_result(sender, false, Some("Duplicate nonce".to_string())).await;
+                        return;
                     }
                     let difficulty = (prover_state.read().await.current_difficulty() as f64
                         * current_global_difficulty_modifier) as u64;
