@@ -17,12 +17,12 @@ use tokio::{
     task,
     time::sleep,
 };
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::{
     accounting::AccountingMessage::NewShare,
     db::{Storage, StorageData, StorageType},
-    AccountingMessage::{Exit, SetN},
+    AccountingMessage::{Exit, NewBlock, SetN},
 };
 
 #[derive(Serialize, Deserialize, Copy, Clone)]
@@ -70,12 +70,15 @@ impl PPLNS {
     }
 
     pub fn add_share(&mut self, share: Share) {
+        let start = Instant::now();
         self.queue.push_back(share);
         self.current_n += share.value;
         while self.current_n > self.n {
             let share = self.queue.pop_front().unwrap();
             self.current_n -= share.value;
         }
+        debug!("add_share took {} us", start.elapsed().as_micros());
+        debug!("n: {} / {}", self.current_n, self.n);
     }
 }
 
@@ -85,13 +88,14 @@ struct Null {}
 pub enum AccountingMessage {
     NewShare(Address<Testnet2>, u64),
     SetN(u64),
+    NewBlock(u32, <Testnet2 as Network>::Commitment),
     Exit,
 }
 
 pub struct Accounting {
     pplns: Arc<RwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
-    block_reward_storage: StorageData<<Testnet2 as Network>::Commitment, PPLNS>,
+    block_reward_storage: StorageData<(u32, <Testnet2 as Network>::Commitment), PPLNS>,
     sender: Sender<AccountingMessage>,
     exit_lock: Arc<AtomicBool>,
 }
@@ -116,6 +120,7 @@ impl Accounting {
 
         let pplns = accounting.pplns.clone();
         let pplns_storage = accounting.pplns_storage.clone();
+        let block_reward_storage = accounting.block_reward_storage.clone();
         let exit_lock = accounting.exit_lock.clone();
         task::spawn(async move {
             while let Some(request) = receiver.recv().await {
@@ -128,7 +133,14 @@ impl Accounting {
                         pplns.write().await.set_n(n);
                         debug!("Set N to {}", n);
                     }
+                    NewBlock(height, commitment) => {
+                        if let Err(e) = block_reward_storage.put(&(height, commitment), &pplns.read().await.clone()) {
+                            error!("Failed to save block reward : {}", e);
+                        }
+                        info!("Recorded block {}", height);
+                    }
                     Exit => {
+                        receiver.close();
                         let _ = pplns_storage.put(&Null {}, &pplns.read().await.clone());
                         exit_lock.store(true, std::sync::atomic::Ordering::SeqCst);
                     }

@@ -44,3 +44,13 @@ features = ["zstd"]
 [dependencies.signal-hook-tokio]
 version = "0.3.1"
 features = ["futures-v0_3"]
+
+[profile.dev]
+opt-level = 1
+debug-assertions = false
+
+[profile.release]
+opt-level = 3
+debug = true
+lto = true
+incremental = false

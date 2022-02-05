@@ -50,8 +50,13 @@ impl Connection {
             {
                 error!("Failed to send ProverAuthenticated message to server: {}", e);
             }
+            if let Err(e) = framed.send(ProverMessage::AuthorizeResult(true, None)).await {
+                error!("Failed to send AuthorizeResult message to client: {}", e);
+                return;
+            }
         } else if let Err(e) = server_sender.send(ServerMessage::ProverDisconnected(peer_addr)).await {
             error!("Failed to send ProverDisconnected message to server: {}", e);
+            return;
         }
 
         info!("Peer {:?} authenticated as {}", peer_addr, conn.address.unwrap());

@@ -1,4 +1,5 @@
 use std::{
+    cmp,
     collections::{HashMap, HashSet, VecDeque},
     fmt::{Display, Formatter},
     net::SocketAddr,
@@ -9,6 +10,7 @@ use std::{
     time::Instant,
 };
 
+use snarkos::Data;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
     traits::Network,
@@ -52,12 +54,22 @@ impl ProverState {
         while self.recent_shares.front().unwrap().elapsed() > std::time::Duration::from_secs(60) {
             self.recent_shares.pop_front();
         }
-        self.next_difficulty = (self.recent_shares.len() as u64 / 3).max(1);
+        self.next_difficulty =
+            ((self.current_difficulty as f64 * f64::sqrt(self.recent_shares.len() as f64 / 3f64)) as u64).max(1);
         debug!("add_share took {} us", now.elapsed().as_micros());
     }
 
     pub fn next_difficulty(&mut self) -> u64 {
-        self.current_difficulty = self.next_difficulty;
+        match self.current_difficulty.cmp(&self.next_difficulty) {
+            cmp::Ordering::Less => {
+                self.recent_shares.clear();
+                self.current_difficulty = self.next_difficulty;
+            }
+            cmp::Ordering::Greater => {
+                self.current_difficulty = ((0.9 * self.current_difficulty as f64) as u64).max(1);
+            }
+            _ => {}
+        }
         self.current_difficulty
     }
 
@@ -76,7 +88,14 @@ impl ProverState {
 
 impl Display for ProverState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.peer_addr, self.address)
+        let addr_str = self.address.to_string();
+        write!(
+            f,
+            "{} ({}...{})",
+            self.peer_addr,
+            &addr_str[0..11],
+            &addr_str[addr_str.len() - 6..]
+        )
     }
 }
 
@@ -101,12 +120,16 @@ impl PoolState {
         while self.recent_shares.front().unwrap().elapsed() > std::time::Duration::from_secs(60) {
             self.recent_shares.pop_front();
         }
-        self.next_global_difficulty_modifier = (self.recent_shares.len() as f64 / 600f64).max(1f64);
+        self.next_global_difficulty_modifier =
+            (self.current_global_difficulty_modifier * (self.recent_shares.len() as f64 / 600f64)).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
     }
 
     pub fn next_global_difficulty_modifier(&mut self) -> f64 {
+        if self.current_global_difficulty_modifier < self.next_global_difficulty_modifier {
+            self.recent_shares.clear();
+        }
         self.current_global_difficulty_modifier = self.next_global_difficulty_modifier;
         self.current_global_difficulty_modifier
     }
@@ -231,11 +254,25 @@ impl Server {
                 Connection::init(stream, peer_addr, self.sender.clone()).await;
             }
             ServerMessage::ProverAuthenticated(peer_addr, address, sender) => {
-                self.authenticated_provers.write().await.insert(peer_addr, sender);
+                self.authenticated_provers
+                    .write()
+                    .await
+                    .insert(peer_addr, sender.clone());
                 self.prover_states
                     .write()
                     .await
                     .insert(peer_addr, ProverState::new(peer_addr, address).into());
+                if let Some(block_template) = self.latest_block_template.read().await.clone() {
+                    if let Err(e) = sender
+                        .send(ProverMessage::Notify(block_template.clone(), u64::MAX))
+                        .await
+                    {
+                        error!(
+                            "Error sending initial block template to prover {} ({}): {}",
+                            peer_addr, address, e
+                        );
+                    }
+                }
             }
             ServerMessage::ProverDisconnected(peer_addr) => {
                 self.connected_provers.write().await.remove(&peer_addr);
@@ -289,6 +326,7 @@ impl Server {
                     self.pool_state.read().await.current_global_difficulty_modifier();
                 let latest_block_template = self.latest_block_template.clone();
                 let accounting_sender = self.accounting_sender.clone();
+                let operator_sender = self.operator_sender.clone();
                 task::spawn(async move {
                     async fn send_result(sender: &Sender<ProverMessage>, result: bool, desc: Option<String>) {
                         if let Err(e) = sender.send(ProverMessage::SubmitResult(result, desc)).await {
@@ -383,6 +421,34 @@ impl Server {
                         error!("Failed to send accounting message: {}", e);
                     }
                     send_result(sender, true, None).await;
+                    info!(
+                        "Received valid proof from prover {} with difficulty {}",
+                        prover_state.read().await,
+                        difficulty
+                    );
+                    if proof_difficulty <= block_template.difficulty_target() {
+                        info!(
+                            "Received unconfirmed block from prover {} with difficulty {} (target {})",
+                            prover_state.read().await,
+                            proof_difficulty,
+                            block_template.difficulty_target()
+                        );
+                        if let Err(e) = operator_sender
+                            .send(OperatorMessage::PoolBlock(nonce, Data::Object(proof)))
+                            .await
+                        {
+                            error!("Failed to report unconfirmed block to operator: {}", e);
+                        }
+                        if let Err(e) = accounting_sender
+                            .send(AccountingMessage::NewBlock(
+                                block_height,
+                                block_template.coinbase_record().commitment(),
+                            ))
+                            .await
+                        {
+                            error!("Failed to send accounting message: {}", e);
+                        }
+                    }
                 });
             }
             ServerMessage::Exit => {}

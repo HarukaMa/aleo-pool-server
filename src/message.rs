@@ -6,6 +6,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof},
     traits::Network,
+    utilities::{FromBytes, ToBytes},
 };
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -13,7 +14,7 @@ use tokio_util::codec::{Decoder, Encoder};
 pub enum ProverMessage {
     // as in stratum, with an additional protocol version field
     Authorize(Address<Testnet2>, String, u16),
-    AuthorizeResult(bool),
+    AuthorizeResult(bool, Option<String>),
 
     // combine notify and set_difficulty to be consistent
     Notify(BlockTemplate<Testnet2>, u64),
@@ -36,11 +37,11 @@ impl ProverMessage {
 
     pub fn id(&self) -> u8 {
         match self {
-            ProverMessage::Authorize(_, _, _) => 0,
-            ProverMessage::AuthorizeResult(_) => 1,
-            ProverMessage::Notify(_, _) => 2,
-            ProverMessage::Submit(_, _, _) => 3,
-            ProverMessage::SubmitResult(_, _) => 4,
+            ProverMessage::Authorize(..) => 0,
+            ProverMessage::AuthorizeResult(..) => 1,
+            ProverMessage::Notify(..) => 2,
+            ProverMessage::Submit(..) => 3,
+            ProverMessage::SubmitResult(..) => 4,
 
             ProverMessage::Canary => 5,
         }
@@ -48,11 +49,11 @@ impl ProverMessage {
 
     pub fn name(&self) -> &'static str {
         match self {
-            ProverMessage::Authorize(_, _, _) => "Authorize",
-            ProverMessage::AuthorizeResult(_) => "AuthorizeResult",
-            ProverMessage::Notify(_, _) => "Notify",
-            ProverMessage::Submit(_, _, _) => "Submit",
-            ProverMessage::SubmitResult(_, _) => "SubmitResult",
+            ProverMessage::Authorize(..) => "Authorize",
+            ProverMessage::AuthorizeResult(..) => "AuthorizeResult",
+            ProverMessage::Notify(..) => "Notify",
+            ProverMessage::Submit(..) => "Submit",
+            ProverMessage::SubmitResult(..) => "SubmitResult",
 
             ProverMessage::Canary => "Canary",
         }
@@ -72,22 +73,7 @@ impl Encoder<ProverMessage> for ProverMessage {
                 bincode::serialize_into(&mut writer, &password)?;
                 writer.write_all(&version.to_le_bytes())?;
             }
-            ProverMessage::AuthorizeResult(result) => {
-                writer.write_all(&[match result {
-                    true => 1,
-                    false => 0,
-                }])?;
-            }
-            ProverMessage::Notify(template, difficulty) => {
-                bincode::serialize_into(&mut writer, &template)?;
-                writer.write_all(&difficulty.to_le_bytes())?;
-            }
-            ProverMessage::Submit(height, nonce, proof) => {
-                writer.write_all(&height.to_le_bytes())?;
-                bincode::serialize_into(&mut writer, &nonce)?;
-                bincode::serialize_into(&mut writer, &proof)?;
-            }
-            ProverMessage::SubmitResult(result, message) => {
+            ProverMessage::AuthorizeResult(result, message) | ProverMessage::SubmitResult(result, message) => {
                 writer.write_all(&[match result {
                     true => 1,
                     false => 0,
@@ -98,6 +84,15 @@ impl Encoder<ProverMessage> for ProverMessage {
                 } else {
                     writer.write_all(&[0])?;
                 }
+            }
+            ProverMessage::Notify(template, difficulty) => {
+                template.write_le(&mut writer)?;
+                writer.write_all(&difficulty.to_le_bytes())?;
+            }
+            ProverMessage::Submit(height, nonce, proof) => {
+                writer.write_all(&height.to_le_bytes())?;
+                nonce.write_le(&mut writer)?;
+                proof.write_le(&mut writer)?;
             }
             ProverMessage::Canary => return Err(anyhow!("Use of unsupported message")),
         }
@@ -124,6 +119,7 @@ impl Decoder for ProverMessage {
         }
 
         let reader = &mut src.reader();
+        reader.read_u32::<LittleEndian>()?;
         let msg_id = reader.read_u8()?;
         let msg = match msg_id {
             0 => {
@@ -134,17 +130,22 @@ impl Decoder for ProverMessage {
             }
             1 => {
                 let result = reader.read_u8()? == 1;
-                ProverMessage::AuthorizeResult(result)
+                let message = if reader.read_u8()? == 1 {
+                    Some(bincode::deserialize_from(reader)?)
+                } else {
+                    None
+                };
+                ProverMessage::AuthorizeResult(result, message)
             }
             2 => {
-                let template = bincode::deserialize_from(&mut *reader)?;
+                let template = BlockTemplate::<Testnet2>::read_le(&mut *reader)?;
                 let difficulty = reader.read_u64::<LittleEndian>()?;
                 ProverMessage::Notify(template, difficulty)
             }
             3 => {
                 let height = reader.read_u32::<LittleEndian>()?;
-                let nonce = bincode::deserialize_from(&mut *reader)?;
-                let proof = bincode::deserialize_from(reader)?;
+                let nonce = <Testnet2 as Network>::PoSWNonce::read_le(&mut *reader)?;
+                let proof = PoSWProof::<Testnet2>::read_le(&mut *reader)?;
                 ProverMessage::Submit(height, nonce, proof)
             }
             4 => {
@@ -157,7 +158,7 @@ impl Decoder for ProverMessage {
                 ProverMessage::SubmitResult(result, message)
             }
             _ => {
-                return Err(anyhow!("Unknown message id"));
+                return Err(anyhow!("Unknown message id: {}", msg_id));
             }
         };
         Ok(Some(msg))

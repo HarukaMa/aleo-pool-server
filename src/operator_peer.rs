@@ -36,10 +36,7 @@ pub struct Node {
     receiver: Arc<Mutex<Receiver<OperatorMessage>>>,
 }
 
-#[derive(Debug)]
-pub struct OperatorMessage {
-    pub(crate) message: Message<Testnet2, OperatorTrial<Testnet2>>,
-}
+pub(crate) type OperatorMessage = Message<Testnet2, OperatorTrial<Testnet2>>;
 
 impl Node {
     pub fn init(operator: String) -> Self {
@@ -65,7 +62,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                 Ok(socket) => match socket {
                     Ok(socket) => {
                         info!("Connected to {}", node.operator);
-                        let mut framed = Framed::new(socket, Message::<Testnet2, OperatorTrial<Testnet2>>::PeerRequest);
+                        let mut framed = Framed::new(socket, Message::PeerRequest);
                         let challenge = Message::ChallengeRequest(
                             OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                             Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
@@ -84,7 +81,6 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                         loop {
                             tokio::select! {
                                 Some(message) = receiver.recv() => {
-                                    let message = message.message.clone();
                                     debug!("Sending {} to operator", message.name());
                                     if let Err(e) = framed.send(message.clone()).await {
                                         error!("Error sending {}: {:?}", message.name(), e);
@@ -103,7 +99,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 }
                                             }
                                             Message::ChallengeResponse(..) => {
-                                                let ping = Message::<Testnet2, OperatorTrial<Testnet2>>::Ping(
+                                                let ping = Message::Ping(
                                                     OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                                                     Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
                                                     NodeType::PoolServer,
@@ -120,7 +116,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             Message::Ping(..) => {
                                                 let mut locators: BTreeMap<u32, (<Testnet2 as Network>::BlockHash, Option<BlockHeader<Testnet2>>)> = BTreeMap::new();
                                                 locators.insert(0, (Testnet2::genesis_block().hash(), None));
-                                                let resp = Message::<Testnet2, OperatorTrial<Testnet2>>::Pong(None, Data::Object(BlockLocators::<Testnet2>::from(locators).unwrap_or_default()));
+                                                let resp = Message::Pong(None, Data::Object(BlockLocators::<Testnet2>::from(locators).unwrap_or_default()));
                                                 if let Err(e) = framed.send(resp).await {
                                                     error!("Error sending pong: {:?}", e);
                                                 } else {
