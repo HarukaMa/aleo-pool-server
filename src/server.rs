@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicU32, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use snarkos::Data;
@@ -27,10 +27,72 @@ use tracing::{debug, error, info, warn};
 
 use crate::{connection::Connection, message::ProverMessage, operator_peer::OperatorMessage, AccountingMessage};
 
+struct Speedometer {
+    storage: RwLock<VecDeque<(Instant, u64)>>,
+    interval: Duration,
+    cached: bool,
+    cache_interval: Option<Duration>,
+    cache_instant: Option<Instant>,
+    cache_value: f64,
+}
+
+impl Speedometer {
+    fn init(interval: Duration) -> Self {
+        Self {
+            storage: RwLock::new(VecDeque::new()),
+            interval,
+            cached: false,
+            cache_interval: None,
+            cache_instant: None,
+            cache_value: 0.0,
+        }
+    }
+
+    fn init_with_cache(interval: Duration, cache_interval: Duration) -> Self {
+        Self {
+            storage: RwLock::new(VecDeque::new()),
+            interval,
+            cached: true,
+            cache_interval: Some(cache_interval),
+            cache_instant: Some(Instant::now() - cache_interval),
+            cache_value: 0.0,
+        }
+    }
+
+    async fn event(&self, value: u64) {
+        let mut storage = self.storage.write().await;
+        storage.push_back((Instant::now(), value));
+        while storage.front().map_or(false, |t| t.0.elapsed() > self.interval) {
+            storage.pop_front();
+        }
+    }
+
+    async fn speed(&mut self) -> f64 {
+        if self.cached && self.cache_instant.unwrap().elapsed() < self.cache_interval.unwrap() {
+            return self.cache_value;
+        }
+        let events = self.storage.read().await.iter().fold(0, |acc, t| acc + t.1);
+        let speed = events as f64 / self.interval.as_secs_f64();
+        if self.cached {
+            self.cache_instant = Some(Instant::now());
+            self.cache_value = speed;
+        }
+        speed
+    }
+
+    async fn reset(&self) {
+        self.storage.write().await.clear();
+    }
+}
+
 struct ProverState {
     peer_addr: SocketAddr,
     address: Address<Testnet2>,
-    recent_shares: VecDeque<Instant>,
+    speed_1m: Speedometer,
+    speed_5m: Speedometer,
+    speed_15m: Speedometer,
+    speed_30m: Speedometer,
+    speed_1h: Speedometer,
     current_difficulty: u64,
     next_difficulty: u64,
     nonce_seen: HashSet<<Testnet2 as Network>::PoSWNonce>,
@@ -41,28 +103,33 @@ impl ProverState {
         Self {
             peer_addr,
             address,
-            recent_shares: VecDeque::new(),
+            speed_1m: Speedometer::init(Duration::from_secs(60)),
+            speed_5m: Speedometer::init_with_cache(Duration::from_secs(60 * 5), Duration::from_secs(30)),
+            speed_15m: Speedometer::init_with_cache(Duration::from_secs(60 * 15), Duration::from_secs(30)),
+            speed_30m: Speedometer::init_with_cache(Duration::from_secs(60 * 30), Duration::from_secs(30)),
+            speed_1h: Speedometer::init_with_cache(Duration::from_secs(60 * 60), Duration::from_secs(30)),
             current_difficulty: 1,
             next_difficulty: 1,
             nonce_seen: HashSet::new(),
         }
     }
 
-    pub fn add_share(&mut self) {
+    pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
-        self.recent_shares.push_back(Instant::now());
-        while self.recent_shares.front().unwrap().elapsed() > std::time::Duration::from_secs(60) {
-            self.recent_shares.pop_front();
-        }
+        self.speed_1m.event(1).await;
+        self.speed_5m.event(value).await;
+        self.speed_15m.event(value).await;
+        self.speed_30m.event(value).await;
+        self.speed_1h.event(value).await;
         self.next_difficulty =
-            ((self.current_difficulty as f64 * f64::sqrt(self.recent_shares.len() as f64 / 3f64)) as u64).max(1);
+            ((self.current_difficulty as f64 * f64::sqrt(self.speed_1m.speed().await * 20f64)) as u64).max(1);
         debug!("add_share took {} us", now.elapsed().as_micros());
     }
 
-    pub fn next_difficulty(&mut self) -> u64 {
+    pub async fn next_difficulty(&mut self) -> u64 {
         match self.current_difficulty.cmp(&self.next_difficulty) {
             cmp::Ordering::Less => {
-                self.recent_shares.clear();
+                self.speed_1m.reset().await;
                 self.current_difficulty = self.next_difficulty;
             }
             cmp::Ordering::Greater => {
@@ -84,6 +151,16 @@ impl ProverState {
     pub fn address(&self) -> Address<Testnet2> {
         self.address
     }
+
+    // noinspection DuplicatedCode
+    pub async fn speed(&mut self) -> Vec<f64> {
+        vec![
+            self.speed_5m.speed().await,
+            self.speed_15m.speed().await,
+            self.speed_30m.speed().await,
+            self.speed_1h.speed().await,
+        ]
+    }
 }
 
 impl Display for ProverState {
@@ -100,7 +177,11 @@ impl Display for ProverState {
 }
 
 struct PoolState {
-    recent_shares: VecDeque<Instant>,
+    speed_1m: Speedometer,
+    speed_5m: Speedometer,
+    speed_15m: Speedometer,
+    speed_30m: Speedometer,
+    speed_1h: Speedometer,
     current_global_difficulty_modifier: f64,
     next_global_difficulty_modifier: f64,
 }
@@ -108,27 +189,32 @@ struct PoolState {
 impl PoolState {
     pub fn new() -> Self {
         Self {
-            recent_shares: VecDeque::new(),
+            speed_1m: Speedometer::init(Duration::from_secs(60)),
+            speed_5m: Speedometer::init_with_cache(Duration::from_secs(60 * 5), Duration::from_secs(30)),
+            speed_15m: Speedometer::init_with_cache(Duration::from_secs(60 * 15), Duration::from_secs(30)),
+            speed_30m: Speedometer::init_with_cache(Duration::from_secs(60 * 30), Duration::from_secs(30)),
+            speed_1h: Speedometer::init_with_cache(Duration::from_secs(60 * 60), Duration::from_secs(30)),
             current_global_difficulty_modifier: 1.0,
             next_global_difficulty_modifier: 1.0,
         }
     }
 
-    pub fn add_share(&mut self) {
+    pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
-        self.recent_shares.push_back(Instant::now());
-        while self.recent_shares.front().unwrap().elapsed() > std::time::Duration::from_secs(60) {
-            self.recent_shares.pop_front();
-        }
+        self.speed_1m.event(1).await;
+        self.speed_5m.event(value).await;
+        self.speed_15m.event(value).await;
+        self.speed_30m.event(value).await;
+        self.speed_1h.event(value).await;
         self.next_global_difficulty_modifier =
-            (self.current_global_difficulty_modifier * (self.recent_shares.len() as f64 / 600f64)).max(1f64);
+            (self.current_global_difficulty_modifier * (self.speed_1m.speed().await / 10f64)).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
     }
 
-    pub fn next_global_difficulty_modifier(&mut self) -> f64 {
+    pub async fn next_global_difficulty_modifier(&mut self) -> f64 {
         if self.current_global_difficulty_modifier < self.next_global_difficulty_modifier {
-            self.recent_shares.clear();
+            self.speed_1m.reset().await;
         }
         self.current_global_difficulty_modifier = self.next_global_difficulty_modifier;
         self.current_global_difficulty_modifier
@@ -136,6 +222,16 @@ impl PoolState {
 
     pub fn current_global_difficulty_modifier(&self) -> f64 {
         self.current_global_difficulty_modifier
+    }
+
+    // noinspection DuplicatedCode
+    pub async fn speed(&mut self) -> Vec<f64> {
+        vec![
+            self.speed_5m.speed().await,
+            self.speed_15m.speed().await,
+            self.speed_30m.speed().await,
+            self.speed_1h.speed().await,
+        ]
     }
 }
 
@@ -176,6 +272,7 @@ pub struct Server {
     authenticated_provers: Arc<RwLock<HashMap<SocketAddr, Sender<ProverMessage>>>>,
     pool_state: Arc<RwLock<PoolState>>,
     prover_states: Arc<RwLock<HashMap<SocketAddr, RwLock<ProverState>>>>,
+    prover_address_connections: Arc<RwLock<HashMap<Address<Testnet2>, HashSet<SocketAddr>>>>,
     latest_block_height: AtomicU32,
     latest_block_template: Arc<RwLock<Option<BlockTemplate<Testnet2>>>>,
 }
@@ -207,6 +304,7 @@ impl Server {
             authenticated_provers: Default::default(),
             pool_state: Arc::new(RwLock::new(PoolState::new())),
             prover_states: Default::default(),
+            prover_address_connections: Default::default(),
             latest_block_height: AtomicU32::new(0),
             latest_block_template: Default::default(),
         });
@@ -262,6 +360,13 @@ impl Server {
                     .write()
                     .await
                     .insert(peer_addr, ProverState::new(peer_addr, address).into());
+                let mut pac_write = self.prover_address_connections.write().await;
+                if let Some(address) = pac_write.get_mut(&address) {
+                    address.insert(peer_addr);
+                } else {
+                    pac_write.insert(address, HashSet::from([peer_addr]));
+                }
+                drop(pac_write);
                 if let Some(block_template) = self.latest_block_template.read().await.clone() {
                     if let Err(e) = sender
                         .send(ProverMessage::Notify(block_template.clone(), u64::MAX))
@@ -275,6 +380,21 @@ impl Server {
                 }
             }
             ServerMessage::ProverDisconnected(peer_addr) => {
+                let state = self.prover_states.write().await.remove(&peer_addr);
+                let address = match state {
+                    Some(state) => Some(state.read().await.address()),
+                    None => None,
+                };
+                if address.is_some() {
+                    let mut pac_write = self.prover_address_connections.write().await;
+                    let pac = pac_write.get_mut(&address.unwrap());
+                    if let Some(pac) = pac {
+                        pac.remove(&peer_addr);
+                        if pac.is_empty() {
+                            pac_write.remove(&address.unwrap());
+                        }
+                    }
+                }
                 self.connected_provers.write().await.remove(&peer_addr);
                 self.authenticated_provers.write().await.remove(&peer_addr);
             }
@@ -292,7 +412,7 @@ impl Server {
                 {
                     error!("Error sending accounting message: {}", e);
                 }
-                let global_difficulty_modifier = self.pool_state.write().await.next_global_difficulty_modifier();
+                let global_difficulty_modifier = self.pool_state.write().await.next_global_difficulty_modifier().await;
                 debug!("Global difficulty modifier: {}", global_difficulty_modifier);
                 for (peer_addr, sender) in self.authenticated_provers.read().await.iter() {
                     let states = self.prover_states.read().await;
@@ -303,17 +423,15 @@ impl Server {
                             continue;
                         }
                     };
+
+                    let prover_display = format!("{}", prover_state.read().await);
                     let difficulty =
-                        (prover_state.write().await.next_difficulty() as f64 * global_difficulty_modifier) as u64;
+                        (prover_state.write().await.next_difficulty().await as f64 * global_difficulty_modifier) as u64;
                     if let Err(e) = sender
                         .send(ProverMessage::Notify(block_template.clone(), u64::MAX / difficulty))
                         .await
                     {
-                        error!(
-                            "Error sending block template to prover {}: {}",
-                            prover_state.read().await,
-                            e
-                        );
+                        error!("Error sending block template to prover {}: {}", prover_display, e);
                     }
                 }
             }
@@ -350,12 +468,13 @@ impl Server {
                             return;
                         }
                     };
+                    let prover_display = format!("{}", prover_state.read().await);
                     let block_template = match latest_block_template.read().await.clone() {
                         Some(template) => template,
                         None => {
                             warn!(
                                 "Received proof from prover {} while no block template is available",
-                                prover_state.read().await
+                                prover_display
                             );
                             send_result(sender, false, Some("No block template".to_string())).await;
                             return;
@@ -364,15 +483,13 @@ impl Server {
                     if block_height != latest_block_height {
                         info!(
                             "Received stale proof from prover {} with block height: {} (expected {})",
-                            prover_state.read().await,
-                            block_height,
-                            latest_block_height
+                            prover_display, block_height, latest_block_height
                         );
                         send_result(sender, false, Some("Stale proof".to_string())).await;
                         return;
                     }
                     if prover_state.write().await.seen_nonce(nonce) {
-                        warn!("Received duplicate nonce from prover {}", prover_state.read().await);
+                        warn!("Received duplicate nonce from prover {}", prover_display);
                         send_result(sender, false, Some("Duplicate nonce".to_string())).await;
                         return;
                     }
@@ -382,21 +499,15 @@ impl Server {
                     let proof_difficulty = match proof.to_proof_difficulty() {
                         Ok(difficulty) => difficulty,
                         Err(e) => {
-                            warn!(
-                                "Received invalid proof from prover {}: {}",
-                                prover_state.read().await,
-                                e
-                            );
+                            warn!("Received invalid proof from prover {}: {}", prover_display, e);
                             send_result(sender, false, Some("No difficulty".to_string())).await;
                             return;
                         }
                     };
                     if proof_difficulty > difficulty_target {
                         warn!(
-                            "Received proof with difficulty {} from prover {} (expected {})",
-                            proof_difficulty,
-                            prover_state.read().await,
-                            difficulty_target
+                            "Received proof with difficulty {} from prover {} (expected 8{})",
+                            proof_difficulty, prover_display, difficulty_target
                         );
                         send_result(sender, false, Some("Difficulty target not met".to_string())).await;
                         return;
@@ -407,12 +518,12 @@ impl Server {
                         &[*block_template.to_header_root().unwrap(), *nonce],
                         &proof,
                     ) {
-                        warn!("Received invalid proof from prover {}", prover_state.read().await);
+                        warn!("Received invalid proof from prover {}", prover_display);
                         send_result(sender, false, Some("Invalid proof".to_string())).await;
                         return;
                     }
-                    prover_state.write().await.add_share();
-                    pool_state.write().await.add_share();
+                    prover_state.write().await.add_share(difficulty).await;
+                    pool_state.write().await.add_share(difficulty).await;
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
                             prover_state.read().await.address(),
@@ -425,13 +536,12 @@ impl Server {
                     send_result(sender, true, None).await;
                     info!(
                         "Received valid proof from prover {} with difficulty {}",
-                        prover_state.read().await,
-                        difficulty
+                        prover_display, difficulty
                     );
                     if proof_difficulty <= block_template.difficulty_target() {
                         info!(
                             "Received unconfirmed block from prover {} with difficulty {} (target {})",
-                            prover_state.read().await,
+                            prover_display,
                             proof_difficulty,
                             block_template.difficulty_target()
                         );
@@ -455,5 +565,17 @@ impl Server {
             }
             ServerMessage::Exit => {}
         }
+    }
+
+    pub async fn online_provers(&self) -> u32 {
+        self.authenticated_provers.read().await.len() as u32
+    }
+
+    pub async fn online_addresses(&self) -> u32 {
+        self.prover_address_connections.read().await.len() as u32
+    }
+
+    pub async fn pool_speed(&self) -> Vec<f64> {
+        self.pool_state.write().await.speed().await
     }
 }

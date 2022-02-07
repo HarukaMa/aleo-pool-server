@@ -1,9 +1,14 @@
+#![feature(in_band_lifetimes)]
+
 mod accounting;
+mod api;
 mod connection;
 mod db;
 mod message;
 mod operator_peer;
 mod server;
+
+use std::sync::Arc;
 
 use futures::stream::StreamExt;
 use signal_hook::consts::{SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGUSR1};
@@ -11,7 +16,8 @@ use signal_hook_tokio::Signals;
 use structopt::StructOpt;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_log::{log, LogTracer};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 use crate::{
     accounting::{Accounting, AccountingMessage},
@@ -30,6 +36,10 @@ struct Opt {
     #[structopt(short = "p", long = "port")]
     port: u16,
 
+    /// API port
+    #[structopt(short = "a", long = "api-port")]
+    api_port: u16,
+
     /// Enable debug logging
     #[structopt(short = "d", long = "debug")]
     debug: bool,
@@ -47,8 +57,14 @@ async fn main() {
     } else {
         tracing::Level::INFO
     };
+    let _ = LogTracer::init_with_filter(log::LevelFilter::Info);
+    let filter = EnvFilter::from_default_env()
+        .add_directive(tracing_level.into())
+        .add_directive("hyper=info".parse().unwrap())
+        .add_directive("warp=info".parse().unwrap())
+        .add_directive("api".parse().unwrap());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_max_level(tracing_level)
+        .with_env_filter(filter)
         .finish();
     // .with(
     //     tracing_subscriber::fmt::Layer::default()
@@ -73,11 +89,13 @@ async fn main() {
 
     let server = Server::init(port, node.sender(), accounting.sender()).await;
 
-    crate::operator_peer::start(node, server.sender());
+    operator_peer::start(node, server.sender());
+
+    api::start(opt.api_port, accounting.clone(), server.clone());
 
     match Signals::new(&[SIGABRT, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGTSTP]) {
         Ok(signals) => {
-            tokio::spawn(handle_signals(signals, accounting, server.sender()));
+            tokio::spawn(handle_signals(signals, accounting.clone(), server.sender()));
         }
         Err(err) => {
             error!("Unable to register signal handlers: {:?}", err);
@@ -88,7 +106,7 @@ async fn main() {
     std::future::pending::<()>().await;
 }
 
-async fn handle_signals(mut signals: Signals, accounting: Accounting, server_sender: Sender<ServerMessage>) {
+async fn handle_signals(mut signals: Signals, accounting: Arc<Accounting>, server_sender: Sender<ServerMessage>) {
     while let Some(signal) = signals.next().await {
         info!("Received signal: {:?}", signal);
         let accounting_sender = accounting.sender();

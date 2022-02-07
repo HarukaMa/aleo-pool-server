@@ -1,10 +1,12 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{atomic::AtomicBool, Arc},
     time::Instant,
 };
 
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address},
     traits::Network,
@@ -12,7 +14,7 @@ use snarkvm::{
 use tokio::{
     sync::{
         mpsc::{channel, Sender},
-        RwLock,
+        RwLock as TokioRwLock,
     },
     task,
     time::sleep,
@@ -24,6 +26,10 @@ use crate::{
     db::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
+
+trait PayoutModel {
+    fn add_share(&mut self, share: Share);
+}
 
 #[derive(Serialize, Deserialize, Copy, Clone)]
 struct Share {
@@ -41,8 +47,8 @@ impl Share {
 #[derive(Serialize, Deserialize, Clone)]
 struct PPLNS {
     queue: VecDeque<Share>,
-    current_n: u64,
-    n: u64,
+    current_n: Arc<RwLock<u64>>,
+    n: Arc<RwLock<u64>>,
 }
 
 impl PPLNS {
@@ -51,34 +57,38 @@ impl PPLNS {
             Ok(Some(pplns)) => pplns,
             Ok(None) | Err(_) => PPLNS {
                 queue: VecDeque::new(),
-                current_n: 0,
-                n: 0,
+                current_n: Default::default(),
+                n: Default::default(),
             },
         }
     }
 
     pub fn set_n(&mut self, n: u64) {
         let start = Instant::now();
-        if n < self.n {
-            while self.current_n > n {
+        let mut current_n = self.current_n.write();
+        let mut self_n = self.n.write();
+        if n < *self_n {
+            while *current_n > n {
                 let share = self.queue.pop_front().unwrap();
-                self.current_n -= share.value;
+                *current_n -= share.value;
             }
         }
-        self.n = n;
+        *self_n = n;
         debug!("set_n took {} us", start.elapsed().as_micros());
     }
 
     pub fn add_share(&mut self, share: Share) {
         let start = Instant::now();
         self.queue.push_back(share);
-        self.current_n += share.value;
-        while self.current_n > self.n {
+        let mut current_n = self.current_n.write();
+        let self_n = self.n.read();
+        *current_n += share.value;
+        while *current_n > *self_n {
             let share = self.queue.pop_front().unwrap();
-            self.current_n -= share.value;
+            *current_n -= share.value;
         }
         debug!("add_share took {} us", start.elapsed().as_micros());
-        debug!("n: {} / {}", self.current_n, self.n);
+        debug!("n: {} / {}", *current_n, self_n);
     }
 }
 
@@ -93,7 +103,7 @@ pub enum AccountingMessage {
 }
 
 pub struct Accounting {
-    pplns: Arc<RwLock<PPLNS>>,
+    pplns: Arc<TokioRwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
     block_reward_storage: StorageData<(u32, <Testnet2 as Network>::Commitment), PPLNS>,
     sender: Sender<AccountingMessage>,
@@ -101,12 +111,12 @@ pub struct Accounting {
 }
 
 impl Accounting {
-    pub fn init() -> Accounting {
+    pub fn init() -> Arc<Accounting> {
         let storage = Storage::load();
         let pplns_storage = storage.init_data(StorageType::PPLNS);
         let block_reward_storage = storage.init_data(StorageType::BlockSnapshot);
 
-        let pplns = Arc::new(RwLock::new(PPLNS::load(pplns_storage.clone())));
+        let pplns = Arc::new(TokioRwLock::new(PPLNS::load(pplns_storage.clone())));
 
         let (sender, mut receiver) = channel(1024);
 
@@ -160,7 +170,7 @@ impl Accounting {
             }
         });
 
-        accounting
+        Arc::new(accounting)
     }
 
     pub fn sender(&self) -> Sender<AccountingMessage> {
@@ -171,5 +181,23 @@ impl Accounting {
         while !self.exit_lock.load(std::sync::atomic::Ordering::SeqCst) {
             sleep(std::time::Duration::from_millis(100)).await;
         }
+    }
+
+    pub async fn current_round(&self) -> serde_json::Value {
+        let pplns = self.pplns.clone().read().await.clone();
+        let mut address_shares = HashMap::new();
+        for share in pplns.queue.iter() {
+            if let Some(shares) = address_shares.get_mut(&share.owner) {
+                *shares += share.value;
+            } else {
+                address_shares.insert(share.owner, share.value);
+            }
+        }
+        json!({
+            "n": pplns.n,
+            "current_n": pplns.current_n,
+            "provers": address_shares.len(),
+            "shares": address_shares,
+        })
     }
 }
