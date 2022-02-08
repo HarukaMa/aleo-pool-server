@@ -30,4 +30,4 @@ Don't use unless you know what you're doing for now.
 
 ## License
 
-GPL-3.0-or-later
+AGPL-3.0-or-later
