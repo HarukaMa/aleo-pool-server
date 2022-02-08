@@ -2,7 +2,7 @@
 
 ## Introduction
 
-A mining pool frontend for the Aleo network.
+A mining pool server for the Aleo network.
 
 ## Why a Standalone Server?
 
