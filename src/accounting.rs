@@ -4,9 +4,10 @@ use std::{
     time::Instant,
 };
 
+use anyhow::{anyhow, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address},
     traits::Network,
@@ -98,20 +99,21 @@ struct Null {}
 pub enum AccountingMessage {
     NewShare(Address<Testnet2>, u64),
     SetN(u64),
-    NewBlock(u32, <Testnet2 as Network>::Commitment),
+    NewBlock(u32, <Testnet2 as Network>::BlockHash),
     Exit,
 }
 
 pub struct Accounting {
+    operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
-    block_reward_storage: StorageData<(u32, <Testnet2 as Network>::Commitment), PPLNS>,
+    block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
     sender: Sender<AccountingMessage>,
     exit_lock: Arc<AtomicBool>,
 }
 
 impl Accounting {
-    pub fn init() -> Arc<Accounting> {
+    pub fn init(operator: String) -> Arc<Accounting> {
         let storage = Storage::load();
         let pplns_storage = storage.init_data(StorageType::PPLNS);
         let block_reward_storage = storage.init_data(StorageType::BlockSnapshot);
@@ -120,7 +122,9 @@ impl Accounting {
 
         let (sender, mut receiver) = channel(1024);
 
+        let operator_host = operator.split(':').collect::<Vec<&str>>()[0];
         let accounting = Accounting {
+            operator: operator_host.into(),
             pplns,
             pplns_storage,
             block_reward_storage,
@@ -143,8 +147,8 @@ impl Accounting {
                         pplns.write().await.set_n(n);
                         debug!("Set N to {}", n);
                     }
-                    NewBlock(height, commitment) => {
-                        if let Err(e) = block_reward_storage.put(&(height, commitment), &pplns.read().await.clone()) {
+                    NewBlock(height, block_hash) => {
+                        if let Err(e) = block_reward_storage.put(&(height, block_hash), &pplns.read().await.clone()) {
                             error!("Failed to save block reward : {}", e);
                         }
                         info!("Recorded block {}", height);
@@ -183,8 +187,7 @@ impl Accounting {
         }
     }
 
-    pub async fn current_round(&self) -> serde_json::Value {
-        let pplns = self.pplns.clone().read().await.clone();
+    fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<Address<Testnet2>, u64>) {
         let mut address_shares = HashMap::new();
         for share in pplns.queue.iter() {
             if let Some(shares) = address_shares.get_mut(&share.owner) {
@@ -193,11 +196,54 @@ impl Accounting {
                 address_shares.insert(share.owner, share.value);
             }
         }
+        (address_shares.len() as u32, address_shares)
+    }
+
+    pub async fn current_round(&self) -> serde_json::Value {
+        let pplns = self.pplns.clone().read().await.clone();
+        let (provers, shares) = Accounting::pplns_to_provers_shares(&pplns);
         json!({
             "n": pplns.n,
             "current_n": pplns.current_n,
-            "provers": address_shares.len(),
-            "shares": address_shares,
+            "provers": provers,
+            "shares": shares,
         })
+    }
+
+    pub async fn all_blocks_mined(&self) -> Result<serde_json::Value> {
+        let client = reqwest::Client::new();
+        let mut obj = serde_json::Map::new();
+        let jsonrpc = json!({
+            "jsonrpc": "2.0",
+            "method": "getminedblock",
+            "id": "",
+        });
+        for (k, v) in self.block_reward_storage.iter() {
+            let (height, block_hash) = k;
+            let object = match jsonrpc.clone() {
+                Value::Object(object) => object,
+                _ => unreachable!(),
+            };
+            let mut request_json = object;
+            request_json.insert("params".into(), json!([block_hash.to_string()]));
+            let result: serde_json::Value = client
+                .post(format!("http://{}:3032", self.operator))
+                .json(&request_json)
+                .send()
+                .await?
+                .json()
+                .await?;
+            let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
+            obj.insert(
+                height.to_string(),
+                json!({
+                    "canonical": result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?,
+                    "value": result["result"]["value"].as_u64().ok_or(anyhow!("value"))?,
+                    "provers": provers,
+                    "shares": shares,
+                }),
+            );
+        }
+        Ok(obj.into())
     }
 }

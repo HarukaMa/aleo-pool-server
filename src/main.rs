@@ -44,6 +44,10 @@ struct Opt {
     #[structopt(short = "d", long = "debug")]
     debug: bool,
 
+    /// Enable trace logging
+    #[structopt(long = "trace")]
+    trace: bool,
+
     /// Output log to file
     #[structopt(long = "log")]
     log: Option<String>,
@@ -52,7 +56,9 @@ struct Opt {
 #[tokio::main]
 async fn main() {
     let opt = Opt::from_args();
-    let tracing_level = if opt.debug {
+    let tracing_level = if opt.trace {
+        tracing::Level::TRACE
+    } else if opt.debug {
         tracing::Level::DEBUG
     } else {
         tracing::Level::INFO
@@ -62,6 +68,7 @@ async fn main() {
         .add_directive(tracing_level.into())
         .add_directive("hyper=info".parse().unwrap())
         .add_directive("warp=info".parse().unwrap())
+        .add_directive("warp=warn".parse().unwrap())
         .add_directive("api".parse().unwrap());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(filter)
@@ -83,7 +90,7 @@ async fn main() {
     let operator = opt.operator;
     let port = opt.port;
 
-    let accounting = Accounting::init();
+    let accounting = Accounting::init(operator.clone());
 
     let node = Node::init(operator);
 

@@ -14,7 +14,9 @@ use snarkos::Data;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
     traits::Network,
+    utilities::{to_bytes_le, ToBytes},
 };
+use snarkvm_algorithms::traits::crh::CRH;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
@@ -23,7 +25,7 @@ use tokio::{
     },
     task,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{connection::Connection, message::ProverMessage, operator_peer::OperatorMessage, AccountingMessage};
 
@@ -71,6 +73,11 @@ impl Speedometer {
         if self.cached && self.cache_instant.unwrap().elapsed() < self.cache_interval.unwrap() {
             return self.cache_value;
         }
+        let mut storage = self.storage.write().await;
+        while storage.front().map_or(false, |t| t.0.elapsed() > self.interval) {
+            storage.pop_front();
+        }
+        drop(storage);
         let events = self.storage.read().await.iter().fold(0, |acc, t| acc + t.1);
         let speed = events as f64 / self.interval.as_secs_f64();
         if self.cached {
@@ -345,7 +352,7 @@ impl Server {
     }
 
     pub async fn process_message(&self, msg: ServerMessage) {
-        debug!("Received message: {}", msg);
+        trace!("Received message: {}", msg);
         match msg {
             ServerMessage::ProverConnected(stream, peer_addr) => {
                 self.connected_provers.write().await.insert(peer_addr);
@@ -414,7 +421,7 @@ impl Server {
                 }
                 let global_difficulty_modifier = self.pool_state.write().await.next_global_difficulty_modifier().await;
                 debug!("Global difficulty modifier: {}", global_difficulty_modifier);
-                for (peer_addr, sender) in self.authenticated_provers.read().await.iter() {
+                for (peer_addr, sender) in self.authenticated_provers.read().await.clone().iter() {
                     let states = self.prover_states.read().await;
                     let prover_state = match states.get(peer_addr) {
                         Some(state) => state,
@@ -427,6 +434,7 @@ impl Server {
                     let prover_display = format!("{}", prover_state.read().await);
                     let difficulty =
                         (prover_state.write().await.next_difficulty().await as f64 * global_difficulty_modifier) as u64;
+                    drop(states);
                     if let Err(e) = sender
                         .send(ProverMessage::Notify(block_template.clone(), u64::MAX / difficulty))
                         .await
@@ -534,6 +542,8 @@ impl Server {
                         error!("Failed to send accounting message: {}", e);
                     }
                     send_result(sender, true, None).await;
+                    drop(provers);
+                    drop(states);
                     info!(
                         "Received valid proof from prover {} with difficulty {}",
                         prover_display, difficulty
@@ -551,14 +561,27 @@ impl Server {
                         {
                             error!("Failed to report unconfirmed block to operator: {}", e);
                         }
-                        if let Err(e) = accounting_sender
-                            .send(AccountingMessage::NewBlock(
-                                block_height,
-                                block_template.coinbase_record().commitment(),
-                            ))
-                            .await
-                        {
-                            error!("Failed to send accounting message: {}", e);
+                        match block_template.to_header_root() {
+                            Ok(header_root) => match &to_bytes_le![block_template.previous_block_hash(), header_root] {
+                                Ok(block_hash_bytes) => match Testnet2::block_hash_crh().hash(block_hash_bytes) {
+                                    Ok(block_hash) => {
+                                        if let Err(e) = {
+                                            accounting_sender
+                                                .send(AccountingMessage::NewBlock(block_height, block_hash.into()))
+                                                .await
+                                        } {
+                                            error!("Failed to send accounting message: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to calculate block hash: {}", e);
+                                    }
+                                },
+                                Err(e) => error!("Failed to convert header root to bytes: {}", e),
+                            },
+                            Err(e) => {
+                                error!("Failed to get header root: {}", e);
+                            }
                         }
                     }
                 });
@@ -578,4 +601,38 @@ impl Server {
     pub async fn pool_speed(&self) -> Vec<f64> {
         self.pool_state.write().await.speed().await
     }
+
+    pub async fn address_prover_count(&self, address: Address<Testnet2>) -> u32 {
+        self.prover_address_connections
+            .read()
+            .await
+            .get(&address)
+            .map(|prover_connections| prover_connections.len() as u32)
+            .unwrap_or(0)
+    }
+
+    pub async fn address_speed(&self, address: Address<Testnet2>) -> Vec<f64> {
+        let mut speed = vec![0.0, 0.0, 0.0, 0.0];
+        let prover_connections_lock = self.prover_address_connections.read().await;
+        let prover_connections = prover_connections_lock.get(&address);
+        if prover_connections.is_none() {
+            return speed;
+        }
+        for prover_connection in prover_connections.unwrap() {
+            if let Some(prover_state) = self.prover_states.read().await.get(prover_connection) {
+                let mut prover_state_lock = prover_state.write().await;
+                prover_state_lock
+                    .speed()
+                    .await
+                    .iter()
+                    .zip(speed.iter_mut())
+                    .for_each(|(s, speed)| {
+                        *speed += s;
+                    });
+            }
+        }
+        speed
+    }
+
+    // pub async fn check
 }

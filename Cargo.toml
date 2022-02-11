@@ -8,10 +8,11 @@ edition = "2021"
 [dependencies]
 #snarkvm = { path = "../../src/snarkVM" }
 snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", rev = "6812908b" }
-snarkos = { path = "../../src/snarkOS" }
-snarkos-storage = { path = "../../src/snarkOS/storage" }
-#snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "53a22610" }
-#snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "53a22610" }
+snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", rev = "6812908b" }
+#snarkos = { path = "../../src/snarkOS" }
+#snarkos-storage = { path = "../../src/snarkOS/storage" }
+snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "66140d4b" }
+snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", rev = "66140d4b" }
 structopt = "0.3.26"
 tracing = "0.1.29"
 tracing-log = "0.1.2"
@@ -29,6 +30,10 @@ signal-hook = "0.3.13"
 bytes = "1.1.0"
 byteorder = "1.4.3"
 warp = "0.3.2"
+
+[dependencies.reqwest]
+version = "0.11.9"
+features = ["json"]
 
 [dependencies.parking_lot]
 version = "0.12.0"
@@ -61,6 +66,7 @@ debug-assertions = false
 
 [profile.release]
 opt-level = 3
-debug = true
-lto = true
-incremental = false
+debug = 1
+lto = "thin"
+incremental = true
+codegen-units = 256

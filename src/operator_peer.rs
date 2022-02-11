@@ -26,7 +26,7 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::ServerMessage;
 
@@ -75,27 +75,27 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                         if let Err(e) = framed.send(challenge).await {
                             error!("Error sending challenge request: {}", e);
                         } else {
-                            debug!("Sent challenge request");
+                            trace!("Sent challenge request");
                         }
                         let receiver = &mut *receiver.lock().await;
                         loop {
                             tokio::select! {
                                 Some(message) = receiver.recv() => {
-                                    debug!("Sending {} to operator", message.name());
+                                    trace!("Sending {} to operator", message.name());
                                     if let Err(e) = framed.send(message.clone()).await {
                                         error!("Error sending {}: {:?}", message.name(), e);
                                     }
                                 }
                                 result = framed.next() => match result {
                                     Some(Ok(message)) => {
-                                        debug!("Received {} from operator", message.name());
+                                        trace!("Received {} from operator", message.name());
                                         match message {
                                             Message::ChallengeRequest(..) => {
                                                 let resp = Message::ChallengeResponse(Data::Object(Testnet2::genesis_block().header().clone()));
                                                 if let Err(e) = framed.send(resp).await {
                                                     error!("Error sending challenge response: {:?}", e);
                                                 } else {
-                                                    debug!("Sent challenge response");
+                                                    trace!("Sent challenge response");
                                                 }
                                             }
                                             Message::ChallengeResponse(..) => {
@@ -110,7 +110,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 if let Err(e) = framed.send(ping).await {
                                                     error!("Error sending ping: {:?}", e);
                                                 } else {
-                                                    debug!("Sent ping");
+                                                    trace!("Sent ping");
                                                 }
                                             }
                                             Message::Ping(..) => {
@@ -120,7 +120,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 if let Err(e) = framed.send(resp).await {
                                                     error!("Error sending pong: {:?}", e);
                                                 } else {
-                                                    debug!("Sent pong");
+                                                    trace!("Sent pong");
                                                 }
                                             }
                                             Message::Pong(..) => {
@@ -132,7 +132,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     if let Err(e) = server_sender.send(ServerMessage::NewBlockTemplate(template)).await {
                                                         error!("Error sending new block template to pool server: {}", e);
                                                     } else {
-                                                        debug!("Sent new block template {} to pool server", block_height);
+                                                        trace!("Sent new block template {} to pool server", block_height);
                                                     }
                                                 } else {
                                                     error!("Error deserializing block template");

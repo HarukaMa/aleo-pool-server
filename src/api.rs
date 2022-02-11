@@ -1,6 +1,7 @@
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use serde_json::json;
+use snarkvm::dpc::{testnet2::Testnet2, Address};
 use tokio::task;
 use tracing::info;
 use warp::{
@@ -23,15 +24,32 @@ pub fn start(port: u16, accounting: Arc<Accounting>, server: Arc<Server>) {
             .and(use_accounting(accounting.clone()))
             .then(current_round)
             .boxed();
+
+        let pool_stats = path("stats").and(use_server(server.clone())).then(pool_stats).boxed();
+
+        let address_stats = path!("stats" / String)
+            .and(use_server(server.clone()))
+            .then(address_stats)
+            .boxed();
+
         let admin_current_round = path!("admin" / "current_round")
             .and(remote())
             .and(use_accounting(accounting.clone()))
             .then(admin_current_round)
             .boxed();
 
-        let pool_stats = path("stats").and(use_server(server.clone())).then(pool_stats).boxed();
+        let admin_all_blocks_mined = path!("admin" / "all_blocks_mined")
+            .and(remote())
+            .and(use_accounting(accounting.clone()))
+            .then(admin_all_blocks_mined)
+            .boxed();
 
-        let endpoints = pool_stats.or(current_round).or(admin_current_round).boxed();
+        let endpoints = current_round
+            .or(pool_stats)
+            .or(address_stats)
+            .or(admin_current_round)
+            .or(admin_all_blocks_mined)
+            .boxed();
 
         let routes = get()
             .or(head())
@@ -60,6 +78,27 @@ async fn pool_stats(server: Arc<Server>) -> Json {
     }))
 }
 
+async fn address_stats(address: String, server: Arc<Server>) -> impl Reply {
+    if let Ok(address) = address.parse::<Address<Testnet2>>() {
+        let speed = server.address_speed(address).await;
+        let prover_count = server.address_prover_count(address).await;
+        Ok(reply::with_status(
+            json(&json!({
+                "online_provers": prover_count,
+                "speed": speed,
+            })),
+            warp::http::StatusCode::OK,
+        ))
+    } else {
+        Ok(reply::with_status(
+            json(&json!({
+                "error": "invalid address"
+            })),
+            warp::http::StatusCode::BAD_REQUEST,
+        ))
+    }
+}
+
 async fn current_round(accounting: Arc<Accounting>) -> Json {
     let data = accounting.current_round().await;
 
@@ -74,8 +113,25 @@ async fn admin_current_round(addr: Option<SocketAddr>, accounting: Arc<Accountin
     let addr = addr.unwrap();
     if addr.ip().is_loopback() {
         let pplns = accounting.current_round().await;
-
         Ok(reply::with_status(json(&pplns), warp::http::StatusCode::OK))
+    } else {
+        Ok(reply::with_status(
+            json(&"Method Not Allowed"),
+            warp::http::StatusCode::METHOD_NOT_ALLOWED,
+        ))
+    }
+}
+
+async fn admin_all_blocks_mined(addr: Option<SocketAddr>, accounting: Arc<Accounting>) -> impl Reply {
+    let addr = addr.unwrap();
+    if addr.ip().is_loopback() {
+        match accounting.all_blocks_mined().await {
+            Ok(blocks) => Ok(reply::with_status(json(&blocks), warp::http::StatusCode::OK)),
+            Err(e) => Ok(reply::with_status(
+                json(&e.to_string()),
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+            )),
+        }
     } else {
         Ok(reply::with_status(
             json(&"Method Not Allowed"),

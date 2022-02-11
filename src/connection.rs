@@ -71,6 +71,7 @@ impl Connection {
                 }
                 result = framed.next() => match result {
                     Some(Ok(msg)) => {
+                        trace!("Received message {} from peer {:?}", msg.name(), peer_addr);
                         match msg {
                             ProverMessage::Submit(height, nonce, proof) => {
                                 if let Err(e) = server_sender

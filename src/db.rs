@@ -2,8 +2,9 @@ use std::{marker::PhantomData, sync::Arc};
 
 use anyhow::Result;
 use dirs::home_dir;
-use rocksdb::{BlockBasedOptions, Options, DB};
+use rocksdb::{BlockBasedOptions, DBWithThreadMode, Direction, Options, SingleThreaded, DB};
 use serde::{de::DeserializeOwned, Serialize};
+use tracing::error;
 
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone)]
@@ -83,5 +84,48 @@ impl<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> StorageDa
         let value_buf = bincode::serialize(value)?;
         self.db.put(key_buf, value_buf)?;
         Ok(())
+    }
+
+    pub fn iter(&self) -> StorageIter<'_, K, V> {
+        StorageIter {
+            storage_type: self.storage_type.clone(),
+            iter: self.db.iterator(rocksdb::IteratorMode::From(
+                &*vec![self.storage_type.prefix()[0]],
+                Direction::Forward,
+            )),
+            _p: Default::default(),
+        }
+    }
+}
+
+pub struct StorageIter<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> {
+    storage_type: StorageType,
+    iter: rocksdb::DBIteratorWithThreadMode<'a, DBWithThreadMode<SingleThreaded>>,
+    _p: PhantomData<(K, V)>,
+}
+
+impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Iterator for StorageIter<'a, K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.iter.valid() {
+            let (raw_key, raw_value) = self.iter.next()?;
+            if raw_key[0] == self.storage_type.prefix()[0] {
+                let key = bincode::deserialize::<K>(&raw_key[1..]);
+                let value = bincode::deserialize::<V>(&raw_value);
+                return match key.and_then(|k| value.map(|v| (k, v))) {
+                    Ok(item) => Some(item),
+                    Err(e) => {
+                        error!("Failed to deserialize key or value: {:?}", e);
+                        error!("Key: {:?}", &raw_key);
+                        error!("Value: {:?}", &raw_value);
+                        None
+                    }
+                };
+            }
+            None
+        } else {
+            None
+        }
     }
 }

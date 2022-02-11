@@ -41,6 +41,7 @@ dependencies = [
  "futures-util",
  "parking_lot 0.12.0",
  "rand",
+ "reqwest",
  "rocksdb",
  "serde",
  "serde_json",
@@ -49,6 +50,7 @@ dependencies = [
  "snarkos",
  "snarkos-storage",
  "snarkvm",
+ "snarkvm-algorithms",
  "structopt",
  "tokio",
  "tokio-stream",
@@ -2034,6 +2036,7 @@ checksum = "f2dd574626839106c320a323308629dcb1acfc96e32a8cba364ddc61ac23ee83"
 [[package]]
 name = "snarkos"
 version = "2.0.0"
+source = "git+https://github.com/HarukaMa/snarkOS.git?rev=66140d4b#66140d4baa39ae62f7f9498a7b0b22fabc170f5f"
 dependencies = [
  "aleo-std",
  "anyhow",
@@ -2073,6 +2076,7 @@ dependencies = [
 [[package]]
 name = "snarkos-storage"
 version = "2.0.0"
+source = "git+https://github.com/HarukaMa/snarkOS.git?rev=66140d4b#66140d4baa39ae62f7f9498a7b0b22fabc170f5f"
 dependencies = [
  "anyhow",
  "bincode",
