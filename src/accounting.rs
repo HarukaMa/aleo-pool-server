@@ -212,6 +212,20 @@ impl Accounting {
 
     pub async fn all_blocks_mined(&self) -> Result<serde_json::Value> {
         let client = reqwest::Client::new();
+        let latest_block_height: u32 = client
+            .post(format!("http://{}:3032", self.operator))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "latestblockheight",
+                "params": [],
+                "id": 1,
+            }))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?["result"][0]
+            .as_u64()
+            .ok_or(anyhow!("Unable to get latest block height"))? as u32;
         let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
@@ -234,10 +248,16 @@ impl Accounting {
                 .json()
                 .await?;
             let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
+            let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
             obj.insert(
                 height.to_string(),
                 json!({
-                    "canonical": result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?,
+                    "confirmed": if canonical {
+                        latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
+                    } else {
+                        false
+                    },
+                    "canonical": canonical,
                     "value": result["result"]["value"].as_u64().ok_or(anyhow!("value"))?,
                     "provers": provers,
                     "shares": shares,
