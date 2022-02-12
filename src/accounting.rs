@@ -189,13 +189,17 @@ impl Accounting {
 
     fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<Address<Testnet2>, u64>) {
         let mut address_shares = HashMap::new();
-        for share in pplns.queue.iter() {
+
+        let time = Instant::now();
+        pplns.queue.iter().for_each(|share| {
             if let Some(shares) = address_shares.get_mut(&share.owner) {
                 *shares += share.value;
             } else {
                 address_shares.insert(share.owner, share.value);
             }
-        }
+        });
+        debug!("PPLNS to Provers shares took {} us", time.elapsed().as_micros());
+
         (address_shares.len() as u32, address_shares)
     }
 
