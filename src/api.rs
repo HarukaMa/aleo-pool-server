@@ -45,8 +45,8 @@ pub fn start(port: u16, accounting: Arc<Accounting>, server: Arc<Server>) {
             .boxed();
 
         let endpoints = current_round
-            .or(pool_stats)
             .or(address_stats)
+            .or(pool_stats)
             .or(admin_current_round)
             .or(admin_all_blocks_mined)
             .boxed();

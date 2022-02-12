@@ -1,5 +1,3 @@
-#![feature(in_band_lifetimes)]
-
 mod accounting;
 mod api;
 mod connection;
