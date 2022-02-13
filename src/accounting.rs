@@ -227,14 +227,14 @@ impl Accounting {
             .send()
             .await?
             .json::<serde_json::Value>()
-            .await?["result"][0]
+            .await?["result"]
             .as_u64()
             .ok_or(anyhow!("Unable to get latest block height"))? as u32;
         let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
             "method": "getminedblock",
-            "id": "",
+            "id": 1,
         });
         for (k, v) in self.block_reward_storage.iter() {
             let (height, block_hash) = k;
