@@ -39,7 +39,7 @@ impl Storage {
         db_options.set_use_fsync(true);
         db_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(1));
         let mut table_options = BlockBasedOptions::default();
-        table_options.set_bloom_filter(10, false);
+        table_options.set_bloom_filter(10.0, false);
         db_options.set_block_based_table_factory(&table_options);
 
         let db = DB::open(&db_options, db_path.to_str().unwrap()).expect("Failed to open DB");
