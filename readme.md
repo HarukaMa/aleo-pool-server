@@ -24,6 +24,13 @@ Still need to implement some more API endpoints and test if it could correctly h
 
 The `0.3` branch of my prover is using the new protocol.
 
+### Things to test
+
+* If new blocks can be properly generated
+* If the payout system works
+* If the difficulty retargeting system works under high load
+* If there are no deadlock under high load
+
 ## Usage
 
 Don't use unless you know what you're doing for now.
