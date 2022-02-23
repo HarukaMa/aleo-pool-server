@@ -268,8 +268,9 @@ impl Accounting {
             let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
             let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
             obj.insert(
-                height.to_string(),
+                block_hash.to_string(),
                 json!({
+                    "height": height,
                     "confirmed": if canonical {
                         latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
                     } else {
