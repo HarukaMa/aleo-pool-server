@@ -1,7 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::{atomic::AtomicBool, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
@@ -24,6 +24,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     accounting::AccountingMessage::NewShare,
+    cache::Cache,
     db::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
@@ -77,8 +78,10 @@ impl PPLNS {
         *self_n = n;
         debug!("set_n took {} us", start.elapsed().as_micros());
     }
+}
 
-    pub fn add_share(&mut self, share: Share) {
+impl PayoutModel for PPLNS {
+    fn add_share(&mut self, share: Share) {
         let start = Instant::now();
         self.queue.push_back(share);
         let mut current_n = self.current_n.write();
@@ -103,12 +106,14 @@ pub enum AccountingMessage {
     Exit,
 }
 
+#[allow(clippy::type_complexity)]
 pub struct Accounting {
     operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
     block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
     sender: Sender<AccountingMessage>,
+    round_cache: TokioRwLock<Cache<(u32, HashMap<Address<Testnet2>, u64>)>>,
     exit_lock: Arc<AtomicBool>,
 }
 
@@ -129,6 +134,7 @@ impl Accounting {
             pplns_storage,
             block_reward_storage,
             sender,
+            round_cache: TokioRwLock::new(Cache::new(Duration::from_secs(10))),
             exit_lock: Arc::new(AtomicBool::new(false)),
         };
 
@@ -187,16 +193,6 @@ impl Accounting {
         }
     }
 
-    fn pplns_to_provers(pplns: &PPLNS) -> u32 {
-        let mut addresses = HashSet::new();
-        let time = Instant::now();
-        pplns.queue.iter().for_each(|share| {
-            addresses.insert(share.owner);
-        });
-        debug!("PPLNS to Provers took {} us", time.elapsed().as_micros());
-        addresses.len() as u32
-    }
-
     fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<Address<Testnet2>, u64>) {
         let mut address_shares = HashMap::new();
 
@@ -215,17 +211,15 @@ impl Accounting {
 
     pub async fn current_round(&self) -> serde_json::Value {
         let pplns = self.pplns.clone().read().await.clone();
-        let provers = Accounting::pplns_to_provers(&pplns);
-        json!({
-            "n": pplns.n,
-            "current_n": pplns.current_n,
-            "provers": provers,
-        })
-    }
-
-    pub async fn current_round_admin(&self) -> serde_json::Value {
-        let pplns = self.pplns.clone().read().await.clone();
-        let (provers, shares) = Accounting::pplns_to_provers_shares(&pplns);
+        let cache = self.round_cache.read().await.get();
+        let (provers, shares) = match cache {
+            Some(cache) => cache,
+            None => {
+                let result = Accounting::pplns_to_provers_shares(&pplns);
+                self.round_cache.write().await.set(result.clone());
+                result
+            }
+        };
         json!({
             "n": pplns.n,
             "current_n": pplns.current_n,

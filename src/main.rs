@@ -1,5 +1,6 @@
 mod accounting;
 mod api;
+mod cache;
 mod connection;
 mod db;
 mod message;
