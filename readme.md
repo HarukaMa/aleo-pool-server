@@ -26,10 +26,10 @@ The `0.3` branch of my prover is using the new protocol.
 
 ### Things to test
 
-* If new blocks can be properly generated
-* If the payout system works
-* If the difficulty retargeting system works under high load
-* If there are no deadlock under high load
+* ~~If new blocks can be properly generated~~ Works
+* If the payout system works - Doesn't work
+* If the difficulty retargeting system works under high load - Works under light load
+* If there are no deadlock under high load - Works under light load
 
 ## Usage
 
