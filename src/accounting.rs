@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{atomic::AtomicBool, Arc},
     time::Instant,
 };
@@ -187,6 +187,16 @@ impl Accounting {
         }
     }
 
+    fn pplns_to_provers(pplns: &PPLNS) -> u32 {
+        let mut addresses = HashSet::new();
+        let time = Instant::now();
+        pplns.queue.iter().for_each(|share| {
+            addresses.insert(share.owner);
+        });
+        debug!("PPLNS to Provers took {} us", time.elapsed().as_micros());
+        addresses.len() as u32
+    }
+
     fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<Address<Testnet2>, u64>) {
         let mut address_shares = HashMap::new();
 
@@ -204,6 +214,16 @@ impl Accounting {
     }
 
     pub async fn current_round(&self) -> serde_json::Value {
+        let pplns = self.pplns.clone().read().await.clone();
+        let provers = Accounting::pplns_to_provers(&pplns);
+        json!({
+            "n": pplns.n,
+            "current_n": pplns.current_n,
+            "provers": provers,
+        })
+    }
+
+    pub async fn current_round_admin(&self) -> serde_json::Value {
         let pplns = self.pplns.clone().read().await.clone();
         let (provers, shares) = Accounting::pplns_to_provers_shares(&pplns);
         json!({

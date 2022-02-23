@@ -100,19 +100,13 @@ async fn address_stats(address: String, server: Arc<Server>) -> impl Reply {
 }
 
 async fn current_round(accounting: Arc<Accounting>) -> Json {
-    let data = accounting.current_round().await;
-
-    json(&json! ({
-        "n": data["n"],
-        "current_n": data["current_n"],
-        "provers": data["provers"],
-    }))
+    json(&accounting.current_round().await)
 }
 
 async fn admin_current_round(addr: Option<SocketAddr>, accounting: Arc<Accounting>) -> impl Reply {
     let addr = addr.unwrap();
     if addr.ip().is_loopback() {
-        let pplns = accounting.current_round().await;
+        let pplns = accounting.current_round_admin().await;
         Ok(reply::with_status(json(&pplns), warp::http::StatusCode::OK))
     } else {
         Ok(reply::with_status(
