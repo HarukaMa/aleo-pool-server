@@ -257,7 +257,7 @@ impl Accounting {
                 _ => unreachable!(),
             };
             let mut request_json = object;
-            request_json.insert("params".into(), json!([block_hash.to_string()]));
+            request_json.insert("params".into(), json!([height, block_hash.to_string()]));
             let result: serde_json::Value = client
                 .post(format!("http://{}:3032", self.operator))
                 .json(&request_json)

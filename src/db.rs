@@ -1,8 +1,9 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use anyhow::Result;
+use bincode::Options;
 use dirs::home_dir;
-use rocksdb::{BlockBasedOptions, DBWithThreadMode, Direction, Options, SingleThreaded, DB};
+use rocksdb::{BlockBasedOptions, DBWithThreadMode, SingleThreaded, DB};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::error;
 
@@ -16,8 +17,8 @@ pub enum StorageType {
 impl StorageType {
     pub fn prefix(&self) -> &'static [u8; 1] {
         match self {
-            StorageType::PPLNS => b"\x00",
-            StorageType::BlockSnapshot => b"\x01",
+            StorageType::PPLNS => &[0],
+            StorageType::BlockSnapshot => &[1],
         }
     }
 }
@@ -33,14 +34,22 @@ impl Storage {
             panic!("No home directory found");
         }
         let db_path = home.unwrap().join(".aleo_pool/accounting.db");
-        let mut db_options = Options::default();
+        let mut db_options = rocksdb::Options::default();
         db_options.create_if_missing(true);
         db_options.set_compression_type(rocksdb::DBCompressionType::Zstd);
         db_options.set_use_fsync(true);
         db_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(1));
-        let mut table_options = BlockBasedOptions::default();
-        table_options.set_bloom_filter(10.0, false);
-        db_options.set_block_based_table_factory(&table_options);
+        db_options.set_comparator("comparator_v1", |a, b| {
+            if !(a[0] == 1 && b[0] == 1) {
+                a.cmp(b)
+            } else if a == [1] {
+                std::cmp::Ordering::Less
+            } else if b == [1] {
+                std::cmp::Ordering::Greater
+            } else {
+                a.cmp(b).reverse()
+            }
+        });
 
         let db = DB::open(&db_options, db_path.to_str().unwrap()).expect("Failed to open DB");
 
@@ -68,20 +77,28 @@ pub struct StorageData<K: Serialize + DeserializeOwned, V: Serialize + Deseriali
 
 impl<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> StorageData<K, V> {
     pub fn get(&self, key: &K) -> Result<Option<V>> {
+        let options = bincode::config::DefaultOptions::new()
+            .with_big_endian()
+            .with_fixint_encoding()
+            .allow_trailing_bytes();
         let mut key_buf = vec![self.storage_type.prefix()[0]];
-        key_buf.reserve(bincode::serialized_size(&key)? as usize);
-        bincode::serialize_into(&mut key_buf, key)?;
+        key_buf.reserve(options.serialized_size(&key)? as usize);
+        options.serialize_into(&mut key_buf, key)?;
         match self.db.get(key_buf)? {
-            Some(value) => Ok(Some(bincode::deserialize(&value)?)),
+            Some(value) => Ok(Some(options.deserialize(&value)?)),
             None => Ok(None),
         }
     }
 
     pub fn put(&self, key: &K, value: &V) -> Result<()> {
+        let options = bincode::config::DefaultOptions::new()
+            .with_big_endian()
+            .with_fixint_encoding()
+            .allow_trailing_bytes();
         let mut key_buf = vec![self.storage_type.prefix()[0]];
-        key_buf.reserve(bincode::serialized_size(&key)? as usize);
-        bincode::serialize_into(&mut key_buf, key)?;
-        let value_buf = bincode::serialize(value)?;
+        key_buf.reserve(options.serialized_size(&key)? as usize);
+        options.serialize_into(&mut key_buf, key)?;
+        let value_buf = options.serialize(value)?;
         self.db.put(key_buf, value_buf)?;
         Ok(())
     }
@@ -89,10 +106,7 @@ impl<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> StorageDa
     pub fn iter(&self) -> StorageIter<'_, K, V> {
         StorageIter {
             storage_type: self.storage_type.clone(),
-            iter: self.db.iterator(rocksdb::IteratorMode::From(
-                &*vec![self.storage_type.prefix()[0]],
-                Direction::Forward,
-            )),
+            iter: self.db.prefix_iterator(self.storage_type.prefix()),
             _p: Default::default(),
         }
     }
@@ -108,11 +122,15 @@ impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Itera
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
+        let options = bincode::config::DefaultOptions::new()
+            .with_big_endian()
+            .with_fixint_encoding()
+            .allow_trailing_bytes();
         if self.iter.valid() {
             let (raw_key, raw_value) = self.iter.next()?;
             if raw_key[0] == self.storage_type.prefix()[0] {
-                let key = bincode::deserialize::<K>(&raw_key[1..]);
-                let value = bincode::deserialize::<V>(&raw_value);
+                let key = options.deserialize::<K>(&raw_key[1..]);
+                let value = options.deserialize::<V>(&raw_value);
                 return match key.and_then(|k| value.map(|v| (k, v))) {
                     Ok(item) => Some(item),
                     Err(e) => {
