@@ -233,7 +233,7 @@ impl Accounting {
         let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
-            "method": "getminedblock",
+            "method": "getminedblockinfo",
             "id": 1,
         });
         for (k, v) in self.block_reward_storage.iter() {
