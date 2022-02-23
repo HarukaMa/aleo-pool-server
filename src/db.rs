@@ -3,7 +3,7 @@ use std::{marker::PhantomData, sync::Arc};
 use anyhow::Result;
 use bincode::Options;
 use dirs::home_dir;
-use rocksdb::{BlockBasedOptions, DBWithThreadMode, SingleThreaded, DB};
+use rocksdb::{DBWithThreadMode, SingleThreaded, DB};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::error;
 
