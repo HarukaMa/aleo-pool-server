@@ -247,6 +247,7 @@ impl Accounting {
             "method": "getminedblockinfo",
             "id": 1,
         });
+        let mut blocks = Vec::<serde_json::Value>::new();
         for (k, v) in self.block_reward_storage.iter() {
             let (height, block_hash) = k;
             let object = match jsonrpc.clone() {
@@ -264,24 +265,23 @@ impl Accounting {
                 .await?;
             let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
             let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
-            obj.insert(
-                height.to_string(),
-                json!({
-                    "block_hash": block_hash.to_string(),
-                    "confirmed": if canonical {
-                        latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
-                    } else {
-                        false
-                    },
-                    "canonical": canonical,
-                    "value": if canonical {
-                        result["result"]["value"].as_u64().ok_or(anyhow!("value"))?
-                    } else { 0 },
-                    "provers": provers,
-                    "shares": shares,
-                }),
-            );
+            blocks.push(json!({
+                "height": height,
+                "block_hash": block_hash.to_string(),
+                "confirmed": if canonical {
+                    latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
+                } else {
+                    false
+                },
+                "canonical": canonical,
+                "value": if canonical {
+                    result["result"]["value"].as_u64().ok_or(anyhow!("value"))?
+                } else { 0 },
+                "provers": provers,
+                "shares": shares,
+            }));
         }
+        obj.insert("blocks".into(), json!(blocks));
         Ok(obj.into())
     }
 }
