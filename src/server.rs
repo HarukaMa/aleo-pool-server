@@ -534,7 +534,7 @@ impl Server {
                     pool_state.write().await.add_share(difficulty).await;
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
-                            prover_state.read().await.address(),
+                            prover_state.read().await.address().to_string(),
                             difficulty,
                         ))
                         .await

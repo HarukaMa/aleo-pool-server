@@ -8,10 +8,7 @@ use anyhow::{anyhow, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use snarkvm::{
-    dpc::{testnet2::Testnet2, Address},
-    traits::Network,
-};
+use snarkvm::{dpc::testnet2::Testnet2, traits::Network};
 use tokio::{
     sync::{
         mpsc::{channel, Sender},
@@ -33,14 +30,14 @@ trait PayoutModel {
     fn add_share(&mut self, share: Share);
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Share {
     value: u64,
-    owner: Address<Testnet2>,
+    owner: String,
 }
 
 impl Share {
-    pub fn init(value: u64, owner: Address<Testnet2>) -> Self {
+    pub fn init(value: u64, owner: String) -> Self {
         Share { value, owner }
     }
 }
@@ -83,7 +80,7 @@ impl PPLNS {
 impl PayoutModel for PPLNS {
     fn add_share(&mut self, share: Share) {
         let start = Instant::now();
-        self.queue.push_back(share);
+        self.queue.push_back(share.clone());
         let mut current_n = self.current_n.write();
         let self_n = self.n.read();
         *current_n += share.value;
@@ -100,7 +97,7 @@ impl PayoutModel for PPLNS {
 struct Null {}
 
 pub enum AccountingMessage {
-    NewShare(Address<Testnet2>, u64),
+    NewShare(String, u64),
     SetN(u64),
     NewBlock(u32, <Testnet2 as Network>::BlockHash),
     Exit,
@@ -113,7 +110,7 @@ pub struct Accounting {
     pplns_storage: StorageData<Null, PPLNS>,
     block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
     sender: Sender<AccountingMessage>,
-    round_cache: TokioRwLock<Cache<(u32, HashMap<Address<Testnet2>, u64>)>>,
+    round_cache: TokioRwLock<Cache<(u32, HashMap<String, u64>)>>,
     exit_lock: Arc<AtomicBool>,
 }
 
@@ -146,7 +143,7 @@ impl Accounting {
             while let Some(request) = receiver.recv().await {
                 match request {
                     NewShare(address, value) => {
-                        pplns.write().await.add_share(Share::init(value, address));
+                        pplns.write().await.add_share(Share::init(value, address.clone()));
                         debug!("Recorded share from {} with value {}", address, value);
                     }
                     SetN(n) => {
@@ -193,7 +190,7 @@ impl Accounting {
         }
     }
 
-    fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<Address<Testnet2>, u64>) {
+    fn pplns_to_provers_shares(pplns: &PPLNS) -> (u32, HashMap<String, u64>) {
         let mut address_shares = HashMap::new();
 
         let time = Instant::now();
@@ -201,7 +198,7 @@ impl Accounting {
             if let Some(shares) = address_shares.get_mut(&share.owner) {
                 *shares += share.value;
             } else {
-                address_shares.insert(share.owner, share.value);
+                address_shares.insert(share.clone().owner, share.value);
             }
         });
         debug!("PPLNS to Provers shares took {} us", time.elapsed().as_micros());
