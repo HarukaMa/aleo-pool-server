@@ -17,7 +17,7 @@ use tokio::{
     task,
     time::sleep,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, log::warn};
 
 use crate::{
     accounting::AccountingMessage::NewShare,
@@ -80,14 +80,19 @@ impl PPLNS {
 impl PayoutModel for PPLNS {
     fn add_share(&mut self, share: Share) {
         let start = Instant::now();
-        self.queue.push_back(share.clone());
         let mut current_n = self.current_n.write();
         let self_n = self.n.read();
         *current_n += share.value;
-        while *current_n > *self_n {
-            let share = self.queue.pop_front().unwrap();
-            *current_n -= share.value;
+        if share.value > *self_n {
+            self.queue.clear();
+            warn!("share target({}) is greater than n({})", share.value, *self_n);
+        } else {
+            while *current_n > *self_n {
+                let share = self.queue.pop_front().unwrap();
+                *current_n -= share.value;
+            }
         }
+        self.queue.push_back(share);
         debug!("add_share took {} us", start.elapsed().as_micros());
         debug!("n: {} / {}", *current_n, self_n);
     }
@@ -283,5 +288,45 @@ impl Accounting {
         }
         obj.insert("blocks".into(), json!(blocks));
         Ok(obj.into())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::accounting::PayoutModel;
+
+    use super::Share;
+    use super::PPLNS;
+
+    #[test]
+    fn test_add_share() {
+        let mut pplns = PPLNS {
+            queue: Default::default(),
+            current_n: Default::default(),
+            n: Default::default(),
+        };
+        pplns.set_n(10);
+
+        // Don't clear "current_n" when "share.value" is greater than "pplns.n"
+        let share = Share {
+            value: 100,
+            owner: "a".to_string(),
+        };
+        pplns.add_share(share);
+        assert_eq!(*pplns.current_n.read(), 100);
+
+        let share = Share {
+            value: 5,
+            owner: "a".to_string(),
+        };
+        pplns.add_share(share);
+        assert_eq!(*pplns.current_n.read(), 5);
+
+        let share = Share {
+            value: 10,
+            owner: "a".to_string(),
+        };
+        pplns.add_share(share);
+        assert_eq!(*pplns.current_n.read(), 10);
     }
 }
