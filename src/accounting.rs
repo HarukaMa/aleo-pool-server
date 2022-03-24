@@ -111,6 +111,7 @@ pub struct Accounting {
     block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
     sender: Sender<AccountingMessage>,
     round_cache: TokioRwLock<Cache<(u32, HashMap<String, u64>)>>,
+    recent_blocks_cache: TokioRwLock<Cache<Vec<serde_json::Value>>>,
     exit_lock: Arc<AtomicBool>,
 }
 
@@ -132,6 +133,7 @@ impl Accounting {
             block_reward_storage,
             sender,
             round_cache: TokioRwLock::new(Cache::new(Duration::from_secs(10))),
+            recent_blocks_cache: TokioRwLock::new(Cache::new(Duration::from_secs(60))),
             exit_lock: Arc::new(AtomicBool::new(false)),
         };
 
@@ -225,7 +227,7 @@ impl Accounting {
         })
     }
 
-    pub async fn all_blocks_mined(&self) -> Result<serde_json::Value> {
+    pub async fn blocks_mined(&self, recent: bool, limit: Option<u32>) -> Result<serde_json::Value> {
         let client = reqwest::Client::new();
         let latest_block_height: u32 = client
             .post(format!("http://{}:3032", self.operator))
@@ -247,39 +249,59 @@ impl Accounting {
             "method": "getminedblockinfo",
             "id": 1,
         });
-        let mut blocks = Vec::<serde_json::Value>::new();
-        for (k, v) in self.block_reward_storage.iter() {
-            let (height, block_hash) = k;
-            let object = match jsonrpc.clone() {
-                Value::Object(object) => object,
-                _ => unreachable!(),
-            };
-            let mut request_json = object;
-            request_json.insert("params".into(), json!([height, block_hash.to_string()]));
-            let result: serde_json::Value = client
-                .post(format!("http://{}:3032", self.operator))
-                .json(&request_json)
-                .send()
-                .await?
-                .json()
-                .await?;
-            let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
-            let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
-            blocks.push(json!({
-                "height": height,
-                "block_hash": block_hash.to_string(),
-                "confirmed": if canonical {
-                    latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
-                } else {
-                    false
-                },
-                "canonical": canonical,
-                "value": if canonical {
-                    result["result"]["value"].as_u64().ok_or(anyhow!("value"))?
-                } else { 0 },
-                "provers": provers,
-                "shares": shares,
-            }));
+        let mut blocks = if recent {
+            match self.recent_blocks_cache.read().await.get() {
+                Some(blocks) => blocks,
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        if blocks.is_empty() {
+            for (k, v) in self.block_reward_storage.iter() {
+                let (height, block_hash) = k;
+                let object = match jsonrpc.clone() {
+                    Value::Object(object) => object,
+                    _ => unreachable!(),
+                };
+                let mut request_json = object;
+                request_json.insert("params".into(), json!([height, block_hash.to_string()]));
+                let result: serde_json::Value = client
+                    .post(format!("http://{}:3032", self.operator))
+                    .json(&request_json)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
+                let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
+                blocks.push(json!({
+                    "height": height,
+                    "block_hash": block_hash.to_string(),
+                    "confirmed": if canonical {
+                        latest_block_height - Testnet2::ALEO_MAXIMUM_FORK_DEPTH >= height
+                    } else {
+                        false
+                    },
+                    "canonical": canonical,
+                    "value": if canonical {
+                        result["result"]["value"].as_u64().ok_or(anyhow!("value"))?
+                    } else { 0 },
+                    "provers": provers,
+                    "shares": shares,
+                }));
+                if recent && blocks.len() == 30 {
+                    break;
+                }
+                if let Some(limit) = limit {
+                    if height < limit {
+                        break;
+                    }
+                }
+            }
+        }
+        if recent {
+            self.recent_blocks_cache.write().await.set(blocks.clone());
         }
         obj.insert("blocks".into(), json!(blocks));
         Ok(obj.into())

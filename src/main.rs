@@ -6,6 +6,7 @@ mod db;
 mod message;
 mod operator_peer;
 mod server;
+mod speedometer;
 
 use std::sync::Arc;
 
