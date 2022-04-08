@@ -54,8 +54,10 @@ impl Connection {
                 error!("Failed to send AuthorizeResult message to client: {}", e);
                 return;
             }
-        } else if let Err(e) = server_sender.send(ServerMessage::ProverDisconnected(peer_addr)).await {
-            error!("Failed to send ProverDisconnected message to server: {}", e);
+        } else {
+            if let Err(e) = server_sender.send(ServerMessage::ProverDisconnected(peer_addr)).await {
+                error!("Failed to send ProverDisconnected message to server: {}", e);
+            }
             return;
         }
 
