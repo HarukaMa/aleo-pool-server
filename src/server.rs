@@ -215,8 +215,8 @@ impl Display for ServerMessage {
 }
 
 pub struct Server {
-    sender: Sender<ServerMessage>, // server channel 发送者
-    operator_sender: Sender<OperatorMessage>, // 全节点channel 发送者
+    sender: Sender<ServerMessage>,
+    operator_sender: Sender<OperatorMessage>,
     accounting_sender: Sender<AccountingMessage>,
     connected_provers: RwLock<HashSet<SocketAddr>>,
     authenticated_provers: Arc<RwLock<HashMap<SocketAddr, Sender<ProverMessage>>>>,
@@ -309,7 +309,7 @@ impl Server {
                 self.prover_states
                     .write()
                     .await
-                    .insert(peer_addr, ProverState::new(peer_addr, address.clone()).into());
+                    .insert(peer_addr, ProverState::new(peer_addr, address).into());
                 let mut pac_write = self.prover_address_connections.write().await;
                 if let Some(address) = pac_write.get_mut(&address) {
                     address.insert(peer_addr);
@@ -447,8 +447,6 @@ impl Server {
                     let difficulty = (prover_state.read().await.current_difficulty() as f64
                         * current_global_difficulty_modifier) as u64;
                     let difficulty_target = u64::MAX / difficulty;
-
-                    /// 用proof进行sha256进行计算
                     let proof_difficulty = match proof.to_proof_difficulty() {
                         Ok(difficulty) => difficulty,
                         Err(e) => {
@@ -457,8 +455,6 @@ impl Server {
                             return;
                         }
                     };
-
-                    /// 如果证明计算出来的难度比目标难度大则挖矿失败
                     if proof_difficulty > difficulty_target {
                         warn!(
                             "Received proof with difficulty {} from prover {} (expected 8{})",
@@ -467,8 +463,6 @@ impl Server {
                         send_result(sender, false, Some("Difficulty target not met".to_string())).await;
                         return;
                     }
-
-                    /// 验证 proof
                     if !Testnet2::posw().verify(
                         block_height,
                         difficulty_target,
@@ -479,7 +473,6 @@ impl Server {
                         send_result(sender, false, Some("Invalid proof".to_string())).await;
                         return;
                     }
-                    
                     prover_state.write().await.add_share(difficulty).await;
                     pool_state.write().await.add_share(difficulty).await;
                     if let Err(e) = accounting_sender
