@@ -111,7 +111,7 @@ pub struct Accounting {
     block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
     sender: Sender<AccountingMessage>,
     round_cache: TokioRwLock<Cache<(u32, HashMap<String, u64>)>>,
-    recent_blocks_cache: TokioRwLock<Cache<Vec<serde_json::Value>>>,
+    recent_blocks_cache: TokioRwLock<Cache<Vec<Value>>>,
     exit_lock: Arc<AtomicBool>,
 }
 
@@ -172,7 +172,7 @@ impl Accounting {
         let pplns_storage = accounting.pplns_storage.clone();
         task::spawn(async move {
             loop {
-                sleep(std::time::Duration::from_secs(60)).await;
+                sleep(Duration::from_secs(60)).await;
                 if let Err(e) = pplns_storage.put(&Null {}, &pplns.read().await.clone()) {
                     error!("Unable to backup pplns: {}", e);
                 }
@@ -188,7 +188,7 @@ impl Accounting {
 
     pub async fn wait_for_exit(&self) {
         while !self.exit_lock.load(std::sync::atomic::Ordering::SeqCst) {
-            sleep(std::time::Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -208,7 +208,7 @@ impl Accounting {
         (address_shares.len() as u32, address_shares)
     }
 
-    pub async fn current_round(&self) -> serde_json::Value {
+    pub async fn current_round(&self) -> Value {
         let pplns = self.pplns.clone().read().await.clone();
         let cache = self.round_cache.read().await.get();
         let (provers, shares) = match cache {
@@ -227,7 +227,7 @@ impl Accounting {
         })
     }
 
-    pub async fn blocks_mined(&self, recent: bool, limit: Option<u32>) -> Result<serde_json::Value> {
+    pub async fn blocks_mined(&self, recent: bool, limit: Option<u32>) -> Result<Value> {
         let client = reqwest::Client::new();
         let latest_block_height: u32 = client
             .post(format!("http://{}:3032", self.operator))
@@ -239,7 +239,7 @@ impl Accounting {
             }))
             .send()
             .await?
-            .json::<serde_json::Value>()
+            .json::<Value>()
             .await?["result"]
             .as_u64()
             .ok_or(anyhow!("Unable to get latest block height"))? as u32;
@@ -266,7 +266,7 @@ impl Accounting {
                 };
                 let mut request_json = object;
                 request_json.insert("params".into(), json!([height, block_hash.to_string()]));
-                let result: serde_json::Value = client
+                let result: Value = client
                     .post(format!("http://{}:3032", self.operator))
                     .json(&request_json)
                     .send()

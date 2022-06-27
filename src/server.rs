@@ -28,10 +28,7 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    connection::Connection,
-    message::ProverMessage,
-    operator_peer::OperatorMessage,
-    speedometer::Speedometer,
+    connection::Connection, message::ProverMessage, operator_peer::OperatorMessage, speedometer::Speedometer,
     AccountingMessage,
 };
 
