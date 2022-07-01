@@ -14,22 +14,25 @@ A mining pool server for the Aleo network.
 
 ## Features
 
-1. A stratum-like protocol for pool - miner communication.
+1. ~~A stratum-like protocol for pool - miner communication.~~ ditching this as I want a really general protocol, ideally standardized
 2. A good enough automatic difficulty targeting system. (Needs more test under high load)
 3. Stats for pool and provers.
 
 ## State
 
-Still need to implement some more API endpoints and test if it could correctly handle found blocks.
+Undergoing a lot of rewrite:
 
-The `0.3` branch of my prover is using the new protocol.
+- ~~Use RDBMS instead of RocksDB for most of the data storage~~
+- Use a real stratum protocol for pool - miner communication
+- Rework the difficulty targeting system
+- Decide if more API endpoints are needed -- many of the work should be offloaded to frontends
 
 ### Things to test
 
 * ~~If new blocks can be properly generated~~
-* ~~If the payout system works~~
+* If the payout system works
 * If the difficulty retargeting system works under high load - Works under light load
-* If there are no deadlock under high load - Works under light load
+* If there is no deadlock under high load - Works under light load
 
 ## Usage
 
