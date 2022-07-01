@@ -71,11 +71,11 @@ impl DB {
     pub async fn get_blocks(&self, limit: u16, page: u16) -> Result<Vec<(i32, u32, String, bool, i64)>> {
         let conn = self.connection_pool.get().await?;
 
-        let last_id: i32 = conn
-            .query_one("SELECT id FROM block ORDER BY id DESC LIMIT 1", &[])
-            .await?
-            .get("id");
-
+        let row = conn.query("SELECT id FROM block ORDER BY id DESC LIMIT 1", &[]).await?;
+        if row.is_empty() {
+            return Ok(vec![]);
+        }
+        let last_id: i32 = row.first().unwrap().get("id");
         let stmt = conn.prepare("SELECT * FROM block WHERE id <= $1 AND id > $2").await?;
         let rows = conn
             .query(&stmt, &[&last_id, &(last_id - (page as i32 - 1) * limit as i32)])
