@@ -288,16 +288,14 @@ impl Accounting {
                     .await?
                     .json::<Value>()
                     .await?["result"];
-                let node_canonical = result["result"]["canonical"]
-                    .as_bool()
-                    .ok_or_else(|| anyhow!("canonical"))?;
+                let node_canonical = result["canonical"].as_bool().ok_or_else(|| anyhow!("canonical"))?;
                 if node_canonical != is_canonical {
                     self.database
                         .set_block_canonical(block_hash.clone(), node_canonical)
                         .await?;
                     is_canonical = node_canonical;
                 }
-                if result["result"]["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
+                if result["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
                     bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
                 }
             }
