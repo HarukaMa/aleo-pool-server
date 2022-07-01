@@ -6,14 +6,9 @@ use tokio::task;
 use tracing::info;
 use warp::{
     addr::remote,
-    get,
-    head,
-    path,
-    reply,
+    get, head, path, reply,
     reply::{json, Json},
-    serve,
-    Filter,
-    Reply,
+    serve, Filter, Reply,
 };
 
 use crate::{Accounting, Server};
@@ -38,31 +33,17 @@ pub fn start(port: u16, accounting: Arc<Accounting>, server: Arc<Server>) {
             .then(admin_current_round)
             .boxed();
 
-        let admin_all_blocks_mined = path!("admin" / "all_blocks_mined")
-            .and(remote())
-            .and(use_accounting(accounting.clone()))
-            .then(admin_all_blocks_mined)
-            .boxed();
-
         let admin_recent_blocks_mined = path!("admin" / "recent_blocks_mined")
             .and(remote())
             .and(use_accounting(accounting.clone()))
             .then(admin_recent_blocks_mined)
             .boxed();
 
-        let admin_blocks_mined = path!("admin" / "blocks_mined" / String)
-            .and(remote())
-            .and(use_accounting(accounting.clone()))
-            .then(admin_blocks_mined)
-            .boxed();
-
         let endpoints = current_round
             .or(address_stats)
             .or(pool_stats)
             .or(admin_current_round)
-            .or(admin_all_blocks_mined)
             .or(admin_recent_blocks_mined)
-            .or(admin_blocks_mined)
             .boxed();
 
         let routes = get()
@@ -136,49 +117,10 @@ async fn admin_current_round(addr: Option<SocketAddr>, accounting: Arc<Accountin
     }
 }
 
-async fn admin_all_blocks_mined(addr: Option<SocketAddr>, accounting: Arc<Accounting>) -> impl Reply {
-    let addr = addr.unwrap();
-    if addr.ip().is_loopback() {
-        match accounting.blocks_mined(false, None).await {
-            Ok(blocks) => Ok(reply::with_status(json(&blocks), warp::http::StatusCode::OK)),
-            Err(e) => Ok(reply::with_status(
-                json(&e.to_string()),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            )),
-        }
-    } else {
-        Ok(reply::with_status(
-            json(&"Method Not Allowed"),
-            warp::http::StatusCode::METHOD_NOT_ALLOWED,
-        ))
-    }
-}
-
 async fn admin_recent_blocks_mined(addr: Option<SocketAddr>, accounting: Arc<Accounting>) -> impl Reply {
     let addr = addr.unwrap();
     if addr.ip().is_loopback() {
-        match accounting.blocks_mined(true, None).await {
-            Ok(blocks) => Ok(reply::with_status(json(&blocks), warp::http::StatusCode::OK)),
-            Err(e) => Ok(reply::with_status(
-                json(&e.to_string()),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            )),
-        }
-    } else {
-        Ok(reply::with_status(
-            json(&"Method Not Allowed"),
-            warp::http::StatusCode::METHOD_NOT_ALLOWED,
-        ))
-    }
-}
-
-async fn admin_blocks_mined(limit: String, addr: Option<SocketAddr>, accounting: Arc<Accounting>) -> impl Reply {
-    let addr = addr.unwrap();
-    if addr.ip().is_loopback() {
-        match accounting
-            .blocks_mined(false, Some(limit.parse().unwrap_or(u32::MAX)))
-            .await
-        {
+        match accounting.blocks_mined(30, 1, true).await {
             Ok(blocks) => Ok(reply::with_status(json(&blocks), warp::http::StatusCode::OK)),
             Err(e) => Ok(reply::with_status(
                 json(&e.to_string()),

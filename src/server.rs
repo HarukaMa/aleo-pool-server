@@ -1,3 +1,4 @@
+use snarkos::environment::network::Data;
 use std::{
     cmp,
     collections::{HashMap, HashSet},
@@ -10,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use snarkos::Data;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
     traits::Network,
@@ -501,13 +501,18 @@ impl Server {
                         {
                             error!("Failed to report unconfirmed block to operator: {}", e);
                         }
+                        let reward = block_template.coinbase_record().value();
                         match block_template.to_header_root() {
                             Ok(header_root) => match &to_bytes_le![block_template.previous_block_hash(), header_root] {
                                 Ok(block_hash_bytes) => match Testnet2::block_hash_crh().hash(block_hash_bytes) {
                                     Ok(block_hash) => {
                                         if let Err(e) = {
                                             accounting_sender
-                                                .send(AccountingMessage::NewBlock(block_height, block_hash.into()))
+                                                .send(AccountingMessage::NewBlock(
+                                                    block_height,
+                                                    block_hash.into(),
+                                                    reward,
+                                                ))
                                                 .await
                                         } {
                                             error!("Failed to send accounting message: {}", e);

@@ -125,17 +125,17 @@ impl Connection {
                     }
                     _ => {
                         warn!("Peer {:?} sent {} before authorizing", peer_addr, message.name());
-                        return Err(anyhow!("Unexpected message before authorization"));
+                        Err(anyhow!("Unexpected message before authorization"))
                     }
                 }
             }
             Some(Err(e)) => {
                 warn!("Error reading from peer {:?}: {}", peer_addr, e);
-                return Err(anyhow!("Error reading from peer"));
+                Err(anyhow!("Error reading from peer"))
             }
             None => {
                 warn!("Peer {:?} disconnected before authorization", peer_addr);
-                return Err(anyhow!("Peer disconnected before authorization"));
+                Err(anyhow!("Peer disconnected before authorization"))
             }
         }
     }

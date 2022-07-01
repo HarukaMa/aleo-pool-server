@@ -1,29 +1,32 @@
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::time::{Duration, Instant};
 
-pub(crate) struct Cache<T: Clone> {
+pub(crate) struct Cache<K: Eq + Hash + Clone, V: Clone> {
     duration: Duration,
-    instant: Instant,
-    value: Option<T>,
+    instants: HashMap<K, Instant>,
+    values: HashMap<K, V>,
 }
 
-impl<T: Clone> Cache<T> {
+impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     pub fn new(duration: Duration) -> Self {
         Cache {
             duration,
-            instant: Instant::now(),
-            value: None,
+            instants: Default::default(),
+            values: Default::default(),
         }
     }
 
-    pub fn get(&self) -> Option<T> {
-        if self.instant.elapsed() > self.duration {
+    pub fn get(&self, key: K) -> Option<V> {
+        let instant = self.instants.get(&key)?;
+        if instant.elapsed() > self.duration {
             return None;
         }
-        self.value.clone()
+        self.values.get(&key).cloned()
     }
 
-    pub fn set(&mut self, value: T) {
-        self.value = Some(value);
-        self.instant = Instant::now();
+    pub fn set(&mut self, key: K, value: V) {
+        self.values.insert(key.clone(), value);
+        self.instants.insert(key, Instant::now());
     }
 }

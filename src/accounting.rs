@@ -4,10 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use snarkvm::dpc::AleoAmount;
 use snarkvm::{dpc::testnet2::Testnet2, traits::Network};
 use tokio::{
     sync::{
@@ -22,7 +23,8 @@ use tracing::{debug, error, info};
 use crate::{
     accounting::AccountingMessage::NewShare,
     cache::Cache,
-    db::{Storage, StorageData, StorageType},
+    db::DB,
+    state_storage::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
 
@@ -93,13 +95,13 @@ impl PayoutModel for PPLNS {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
 struct Null {}
 
 pub enum AccountingMessage {
     NewShare(String, u64),
     SetN(u64),
-    NewBlock(u32, <Testnet2 as Network>::BlockHash),
+    NewBlock(u32, <Testnet2 as Network>::BlockHash, AleoAmount),
     Exit,
 }
 
@@ -108,10 +110,10 @@ pub struct Accounting {
     operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
-    block_reward_storage: StorageData<(u32, <Testnet2 as Network>::BlockHash), PPLNS>,
+    database: Arc<DB>,
     sender: Sender<AccountingMessage>,
-    round_cache: TokioRwLock<Cache<(u32, HashMap<String, u64>)>>,
-    recent_blocks_cache: TokioRwLock<Cache<Vec<Value>>>,
+    round_cache: TokioRwLock<Cache<Null, (u32, HashMap<String, u64>)>>,
+    block_canonical_cache: TokioRwLock<Cache<String, bool>>,
     exit_lock: Arc<AtomicBool>,
 }
 
@@ -119,7 +121,7 @@ impl Accounting {
     pub fn init(operator: String) -> Arc<Accounting> {
         let storage = Storage::load();
         let pplns_storage = storage.init_data(StorageType::PPLNS);
-        let block_reward_storage = storage.init_data(StorageType::BlockSnapshot);
+        let database = Arc::new(DB::init());
 
         let pplns = Arc::new(TokioRwLock::new(PPLNS::load(pplns_storage.clone())));
 
@@ -130,16 +132,16 @@ impl Accounting {
             operator: operator_host.into(),
             pplns,
             pplns_storage,
-            block_reward_storage,
+            database,
             sender,
             round_cache: TokioRwLock::new(Cache::new(Duration::from_secs(10))),
-            recent_blocks_cache: TokioRwLock::new(Cache::new(Duration::from_secs(60))),
+            block_canonical_cache: TokioRwLock::new(Cache::new(Duration::from_secs(300))),
             exit_lock: Arc::new(AtomicBool::new(false)),
         };
 
         let pplns = accounting.pplns.clone();
         let pplns_storage = accounting.pplns_storage.clone();
-        let block_reward_storage = accounting.block_reward_storage.clone();
+        let database = accounting.database.clone();
         let exit_lock = accounting.exit_lock.clone();
         task::spawn(async move {
             while let Some(request) = receiver.recv().await {
@@ -152,8 +154,11 @@ impl Accounting {
                         pplns.write().await.set_n(n);
                         debug!("Set N to {}", n);
                     }
-                    NewBlock(height, block_hash) => {
-                        if let Err(e) = block_reward_storage.put(&(height, block_hash), &pplns.read().await.clone()) {
+                    NewBlock(height, block_hash, reward) => {
+                        let pplns = pplns.read().await.clone();
+                        let (_, address_shares) = Accounting::pplns_to_provers_shares(&pplns);
+
+                        if let Err(e) = database.save_block(height, block_hash, reward, address_shares).await {
                             error!("Failed to save block reward : {}", e);
                         }
                         info!("Recorded block {}", height);
@@ -210,12 +215,12 @@ impl Accounting {
 
     pub async fn current_round(&self) -> Value {
         let pplns = self.pplns.clone().read().await.clone();
-        let cache = self.round_cache.read().await.get();
+        let cache = self.round_cache.read().await.get(Null {});
         let (provers, shares) = match cache {
             Some(cache) => cache,
             None => {
                 let result = Accounting::pplns_to_provers_shares(&pplns);
-                self.round_cache.write().await.set(result.clone());
+                self.round_cache.write().await.set(Null {}, result.clone());
                 result
             }
         };
@@ -227,7 +232,7 @@ impl Accounting {
         })
     }
 
-    pub async fn blocks_mined(&self, recent: bool, limit: Option<u32>) -> Result<Value> {
+    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
         let client = reqwest::Client::new();
         let latest_block_height: u32 = client
             .post(format!("http://{}:3032", self.operator))
@@ -242,68 +247,82 @@ impl Accounting {
             .json::<Value>()
             .await?["result"]
             .as_u64()
-            .ok_or(anyhow!("Unable to get latest block height"))? as u32;
+            .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32;
         let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
             "method": "getminedblockinfo",
             "id": 1,
         });
-        let mut blocks = if recent {
-            match self.recent_blocks_cache.read().await.get() {
-                Some(blocks) => blocks,
-                None => Vec::new(),
+        let blocks = self.database.get_blocks(limit, page).await?;
+        let shares = match with_shares {
+            true => {
+                self.database
+                    .get_block_shares(blocks.iter().map(|b| b.0).collect())
+                    .await?
             }
-        } else {
-            Vec::new()
+            false => Default::default(),
         };
-        if blocks.is_empty() {
-            for (k, v) in self.block_reward_storage.iter() {
-                let (height, block_hash) = k;
+
+        let mut res = Vec::with_capacity(limit as usize);
+
+        for (id, height, block_hash, mut is_canonical, reward) in blocks {
+            if self
+                .block_canonical_cache
+                .read()
+                .await
+                .get(block_hash.clone())
+                .is_none()
+            {
                 let object = match jsonrpc.clone() {
                     Value::Object(object) => object,
                     _ => unreachable!(),
                 };
                 let mut request_json = object;
-                request_json.insert("params".into(), json!([height, block_hash.to_string()]));
-                let result: Value = client
+                request_json.insert("params".into(), json!([height, block_hash]));
+
+                let result = &client
                     .post(format!("http://{}:3032", self.operator))
                     .json(&request_json)
                     .send()
                     .await?
-                    .json()
-                    .await?;
-                let (provers, shares) = Accounting::pplns_to_provers_shares(&v);
-                let canonical = result["result"]["canonical"].as_bool().ok_or(anyhow!("canonical"))?;
-                blocks.push(json!({
-                    "height": height,
-                    "block_hash": block_hash.to_string(),
-                    "confirmed": if canonical {
-                        latest_block_height.saturating_sub(Testnet2::ALEO_MAXIMUM_FORK_DEPTH) >= height
-                    } else {
-                        false
-                    },
-                    "canonical": canonical,
-                    "value": if canonical {
-                        result["result"]["value"].as_u64().ok_or(anyhow!("value"))?
-                    } else { 0 },
-                    "provers": provers,
-                    "shares": shares,
-                }));
-                if recent && blocks.len() == 30 {
-                    break;
+                    .json::<Value>()
+                    .await?["result"];
+                let node_canonical = result["result"]["canonical"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow!("canonical"))?;
+                if node_canonical != is_canonical {
+                    self.database
+                        .set_block_canonical(block_hash.clone(), node_canonical)
+                        .await?;
+                    is_canonical = node_canonical;
                 }
-                if let Some(limit) = limit {
-                    if height < limit {
-                        break;
-                    }
+                if result["result"]["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
+                    bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
                 }
             }
+            let mut value = json!({
+                "height": height,
+                "block_hash": block_hash.to_string(),
+                "confirmed": if is_canonical {
+                    latest_block_height.saturating_sub(Testnet2::ALEO_MAXIMUM_FORK_DEPTH) >= height
+                } else {
+                    false
+                },
+                "canonical": is_canonical,
+                "value": if is_canonical { reward } else { 0 },
+            });
+            if with_shares {
+                let data = shares.get(&id);
+                if data == None {
+                    bail!("Missing shares for block {}", id);
+                }
+                value["shares"] = json!(data.unwrap());
+            }
+            res.push(value);
         }
-        if recent {
-            self.recent_blocks_cache.write().await.set(blocks.clone());
-        }
-        obj.insert("blocks".into(), json!(blocks));
+
+        obj.insert("blocks".into(), json!(res));
         Ok(obj.into())
     }
 }

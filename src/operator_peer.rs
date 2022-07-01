@@ -2,14 +2,9 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures_util::sink::SinkExt;
 use rand::{thread_rng, Rng};
-use snarkos::{
-    helpers::{NodeType, State},
-    Data,
-    Environment,
-    Message,
-    OperatorTrial,
-};
-use snarkos_storage::BlockLocators;
+use snarkos::environment::helpers::{BlockLocators, NodeType, Status};
+use snarkos::environment::network::{Data, Message, MessageCodec};
+use snarkos::environment::{Environment, OperatorTrial};
 use snarkvm::{
     dpc::{testnet2::Testnet2, BlockHeader},
     traits::Network,
@@ -62,12 +57,13 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                 Ok(socket) => match socket {
                     Ok(socket) => {
                         info!("Connected to {}", node.operator);
-                        let mut framed = Framed::new(socket, Message::PeerRequest);
+                        let mut framed: Framed<TcpStream, MessageCodec<Testnet2, OperatorTrial<Testnet2>>> =
+                            Framed::new(socket, Default::default());
                         let challenge = Message::ChallengeRequest(
                             OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                             Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
                             NodeType::PoolServer,
-                            State::Ready,
+                            Status::Ready,
                             4132,
                             thread_rng().gen(),
                             0,
@@ -103,7 +99,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     OperatorTrial::<Testnet2>::MESSAGE_VERSION,
                                                     Testnet2::ALEO_MAXIMUM_FORK_DEPTH,
                                                     NodeType::PoolServer,
-                                                    State::Ready,
+                                                    Status::Ready,
                                                     Testnet2::genesis_block().hash(),
                                                     Data::Object(Testnet2::genesis_block().header().clone()),
                                                 );

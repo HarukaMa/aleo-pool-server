@@ -1,149 +1,121 @@
-use std::{marker::PhantomData, sync::Arc};
-
 use anyhow::Result;
-use bincode::Options;
-use dirs::home_dir;
-use rocksdb::{DBWithThreadMode, SingleThreaded, DB};
-use serde::{de::DeserializeOwned, Serialize};
-use tracing::error;
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use snarkvm::dpc::testnet2::Testnet2;
+use snarkvm::dpc::{AleoAmount, Network};
+use std::collections::HashMap;
+use std::env;
+use tokio_postgres::NoTls;
+use tracing::warn;
 
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Clone)]
-pub enum StorageType {
-    PPLNS,
-    BlockSnapshot,
+pub struct DB {
+    connection_pool: Pool,
 }
 
-impl StorageType {
-    pub fn prefix(&self) -> &'static [u8; 1] {
-        match self {
-            StorageType::PPLNS => &[0],
-            StorageType::BlockSnapshot => &[1],
-        }
-    }
-}
-
-pub struct Storage {
-    db: Arc<DB>,
-}
-
-impl Storage {
-    pub fn load() -> Storage {
-        let home = home_dir();
-        if home.is_none() {
-            panic!("No home directory found");
-        }
-        let db_path = home.unwrap().join(".aleo_pool/accounting.db");
-        let mut db_options = rocksdb::Options::default();
-        db_options.create_if_missing(true);
-        db_options.set_compression_type(rocksdb::DBCompressionType::Zstd);
-        db_options.set_use_fsync(true);
-        db_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(1));
-        db_options.set_comparator("comparator_v1", |a, b| {
-            if !(a[0] == 1 && b[0] == 1) {
-                a.cmp(b)
-            } else if a == [1] {
-                std::cmp::Ordering::Less
-            } else if b == [1] {
-                std::cmp::Ordering::Greater
-            } else {
-                a.cmp(b).reverse()
-            }
+impl DB {
+    pub fn init() -> DB {
+        let mut cfg = Config::new();
+        cfg.host = Some(env::var("DB_HOST").unwrap_or_else(|_| panic!("No database host defined")));
+        cfg.port = Some(
+            env::var("DB_PORT")
+                .unwrap_or_else(|_| "5432".to_string())
+                .parse::<u16>()
+                .unwrap_or_else(|_| panic!("Invalid database port")),
+        );
+        cfg.dbname = Some(env::var("DB_DATABASE").unwrap_or_else(|_| panic!("No database name defined")));
+        cfg.user = Some(env::var("DB_USER").unwrap_or_else(|_| panic!("No database user defined")));
+        cfg.password = Some(env::var("DB_PASSWORD").unwrap_or_else(|_| panic!("No database password defined")));
+        let schema = env::var("DB_SCHEMA").unwrap_or_else(|_| {
+            warn!("Using schema public as default");
+            "public".to_string()
         });
-
-        let db = DB::open(&db_options, db_path.to_str().unwrap()).expect("Failed to open DB");
-
-        Storage { db: Arc::new(db) }
+        cfg.manager = Some(ManagerConfig {
+            recycling_method: RecyclingMethod::Custom(format!("set search_path = {}", schema)),
+        });
+        let pool = cfg
+            .create_pool(Some(Runtime::Tokio1), NoTls)
+            .unwrap_or_else(|_| panic!("Failed to create database connection pool"));
+        DB { connection_pool: pool }
     }
 
-    pub fn init_data<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned>(
+    pub async fn save_block(
         &self,
-        storage_type: StorageType,
-    ) -> StorageData<K, V> {
-        StorageData {
-            db: self.db.clone(),
-            storage_type,
-            _p: PhantomData,
+        height: u32,
+        block_hash: <Testnet2 as Network>::BlockHash,
+        reward: AleoAmount,
+        shares: HashMap<String, u64>,
+    ) -> Result<()> {
+        let mut conn = self.connection_pool.get().await?;
+        let transaction = conn.transaction().await?;
+
+        let block_id: i32 = transaction
+            .query_one(
+                "INSERT INTO block (height, block_hash, reward) VALUES ($1, $2, $3) RETURNING id",
+                &[&height, &block_hash.to_string(), &reward.as_i64()],
+            )
+            .await?
+            .try_get("id")?;
+
+        let stmt = transaction
+            .prepare("INSERT INTO share (block_id, miner, share) VALUES ($1, $2, $3)")
+            .await?;
+        for (address, share) in shares {
+            transaction
+                .query(&stmt, &[&block_id, &address, &i64::try_from(share)?])
+                .await?;
         }
-    }
-}
 
-#[derive(Clone)]
-pub struct StorageData<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> {
-    db: Arc<DB>,
-    storage_type: StorageType,
-    _p: PhantomData<(K, V)>,
-}
-
-impl<K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> StorageData<K, V> {
-    pub fn get(&self, key: &K) -> Result<Option<V>> {
-        let options = bincode::config::DefaultOptions::new()
-            .with_big_endian()
-            .with_fixint_encoding()
-            .allow_trailing_bytes();
-        let mut key_buf = vec![self.storage_type.prefix()[0]];
-        key_buf.reserve(options.serialized_size(&key)? as usize);
-        options.serialize_into(&mut key_buf, key)?;
-        match self.db.get(key_buf)? {
-            Some(value) => Ok(Some(options.deserialize(&value)?)),
-            None => Ok(None),
-        }
-    }
-
-    pub fn put(&self, key: &K, value: &V) -> Result<()> {
-        let options = bincode::config::DefaultOptions::new()
-            .with_big_endian()
-            .with_fixint_encoding()
-            .allow_trailing_bytes();
-        let mut key_buf = vec![self.storage_type.prefix()[0]];
-        key_buf.reserve(options.serialized_size(&key)? as usize);
-        options.serialize_into(&mut key_buf, key)?;
-        let value_buf = options.serialize(value)?;
-        self.db.put(key_buf, value_buf)?;
+        transaction.commit().await?;
         Ok(())
     }
 
-    pub fn iter(&self) -> StorageIter<'_, K, V> {
-        StorageIter {
-            storage_type: self.storage_type.clone(),
-            iter: self.db.prefix_iterator(self.storage_type.prefix()),
-            _p: Default::default(),
-        }
+    pub async fn get_blocks(&self, limit: u16, page: u16) -> Result<Vec<(i32, u32, String, bool, i64)>> {
+        let conn = self.connection_pool.get().await?;
+
+        let last_id: i32 = conn
+            .query_one("SELECT id FROM block ORDER BY id DESC LIMIT 1", &[])
+            .await?
+            .get("id");
+
+        let stmt = conn.prepare("SELECT * FROM block WHERE id <= $1 AND id > $2").await?;
+        let rows = conn
+            .query(&stmt, &[&last_id, &(last_id - (page as i32 - 1) * limit as i32)])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let id: i32 = row.get("id");
+                let height: u32 = row.get("height");
+                let block_hash: String = row.get("block_hash");
+                let reward: i64 = row.get("reward");
+                let is_canonical: bool = row.get("is_canonical");
+                (id, height, block_hash, is_canonical, reward)
+            })
+            .collect())
     }
-}
 
-pub struct StorageIter<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> {
-    storage_type: StorageType,
-    iter: rocksdb::DBIteratorWithThreadMode<'a, DBWithThreadMode<SingleThreaded>>,
-    _p: PhantomData<(K, V)>,
-}
+    pub async fn set_block_canonical(&self, block_hash: String, is_canonical: bool) -> Result<()> {
+        let mut conn = self.connection_pool.get().await?;
+        let transaction = conn.transaction().await?;
+        let stmt = transaction
+            .prepare("UPDATE block SET is_canonical = $1 WHERE block_hash = $2")
+            .await?;
+        transaction.query(&stmt, &[&is_canonical, &block_hash]).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 
-impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Iterator for StorageIter<'a, K, V> {
-    type Item = (K, V);
+    pub async fn get_block_shares(&self, id: Vec<i32>) -> Result<HashMap<i32, HashMap<String, i64>>> {
+        let conn = self.connection_pool.get().await?;
+        let stmt = conn.prepare("SELECT * FROM share WHERE block_id = ANY($1)").await?;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let options = bincode::config::DefaultOptions::new()
-            .with_big_endian()
-            .with_fixint_encoding()
-            .allow_trailing_bytes();
-        if self.iter.valid() {
-            let (raw_key, raw_value) = self.iter.next()?;
-            if raw_key[0] == self.storage_type.prefix()[0] {
-                let key = options.deserialize::<K>(&raw_key[1..]);
-                let value = options.deserialize::<V>(&raw_value);
-                return match key.and_then(|k| value.map(|v| (k, v))) {
-                    Ok(item) => Some(item),
-                    Err(e) => {
-                        error!("Failed to deserialize key or value: {:?}", e);
-                        error!("Key: {:?}", &raw_key);
-                        error!("Value: {:?}", &raw_value);
-                        None
-                    }
-                };
-            }
-            None
-        } else {
-            None
+        let res = conn.query(&stmt, &[&id]).await?;
+        let mut shares = HashMap::new();
+        for row in res {
+            let block_id: i32 = row.get("block_id");
+            let miner: String = row.get("miner");
+            let share: i64 = row.get("share");
+            shares.entry(block_id).or_insert_with(HashMap::new).insert(miner, share);
         }
+        Ok(shares)
     }
 }

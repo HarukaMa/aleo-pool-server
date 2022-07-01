@@ -7,13 +7,14 @@ mod message;
 mod operator_peer;
 mod server;
 mod speedometer;
+mod state_storage;
 
 use std::sync::Arc;
 
+use clap::Parser;
 use futures::stream::StreamExt;
 use signal_hook::consts::{SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGUSR1};
 use signal_hook_tokio::Signals;
-use structopt::StructOpt;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 use tracing_log::{log, LogTracer};
@@ -25,37 +26,38 @@ use crate::{
     server::{Server, ServerMessage},
 };
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "pool_server", about = "Aleo mining pool server", setting = structopt::clap::AppSettings::ColoredHelp)]
+#[derive(Debug, Parser)]
+#[clap(name = "pool_server", about = "Aleo mining pool server")]
 struct Opt {
     /// Full operator node address
-    #[structopt(short = "o", long = "operator")]
+    #[clap(short, long)]
     operator: String,
 
     /// Port to listen for incoming provers
-    #[structopt(short = "p", long = "port")]
+    #[clap(short, long)]
     port: u16,
 
     /// API port
-    #[structopt(short = "a", long = "api-port")]
+    #[clap(short, long = "api-port")]
     api_port: u16,
 
     /// Enable debug logging
-    #[structopt(short = "d", long = "debug")]
+    #[clap(short, long)]
     debug: bool,
 
     /// Enable trace logging
-    #[structopt(long = "trace")]
+    #[clap(short, long)]
     trace: bool,
 
     /// Output log to file
-    #[structopt(long = "log")]
+    #[clap(long)]
     log: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
-    let opt = Opt::from_args();
+    dotenv::dotenv().ok();
+    let opt = Opt::parse();
     let tracing_level = if opt.trace {
         tracing::Level::TRACE
     } else if opt.debug {
