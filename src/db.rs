@@ -50,7 +50,7 @@ impl DB {
         let block_id: i32 = transaction
             .query_one(
                 "INSERT INTO block (height, block_hash, reward) VALUES ($1, $2, $3) RETURNING id",
-                &[&height, &block_hash.to_string(), &reward.as_i64()],
+                &[&(height as i64), &block_hash.to_string(), &reward.as_i64()],
             )
             .await?
             .try_get("id")?;
@@ -60,7 +60,7 @@ impl DB {
             .await?;
         for (address, share) in shares {
             transaction
-                .query(&stmt, &[&block_id, &address, &i64::try_from(share)?])
+                .query(&stmt, &[&block_id, &address, &(share as i64)])
                 .await?;
         }
 
