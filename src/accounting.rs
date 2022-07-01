@@ -267,13 +267,8 @@ impl Accounting {
         let mut res = Vec::with_capacity(limit as usize);
 
         for (id, height, block_hash, mut is_canonical, reward) in blocks {
-            if self
-                .block_canonical_cache
-                .read()
-                .await
-                .get(block_hash.clone())
-                .is_none()
-            {
+            let cache_result = self.block_canonical_cache.read().await.get(block_hash.clone());
+            if cache_result.is_none() {
                 let object = match jsonrpc.clone() {
                     Value::Object(object) => object,
                     _ => unreachable!(),
@@ -298,6 +293,10 @@ impl Accounting {
                 if result["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
                     bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
                 }
+                self.block_canonical_cache
+                    .write()
+                    .await
+                    .set(block_hash.clone(), is_canonical);
             }
             let mut value = json!({
                 "height": height,
