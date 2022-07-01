@@ -84,11 +84,11 @@ impl DB {
             .into_iter()
             .map(|row| {
                 let id: i32 = row.get("id");
-                let height: u32 = row.get("height");
+                let height: i64 = row.get("height");
                 let block_hash: String = row.get("block_hash");
                 let reward: i64 = row.get("reward");
                 let is_canonical: bool = row.get("is_canonical");
-                (id, height, block_hash, is_canonical, reward)
+                (id, height as u32, block_hash, is_canonical, reward)
             })
             .collect())
     }
