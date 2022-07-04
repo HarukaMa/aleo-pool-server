@@ -1,6 +1,5 @@
 use snarkos::environment::network::Data;
 use std::{
-    cmp,
     collections::{HashMap, HashSet},
     fmt::{Display, Formatter},
     net::SocketAddr,
@@ -63,27 +62,17 @@ impl ProverState {
 
     pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
-        self.speed_1m.event(1).await;
+        self.speed_1m.event(value).await;
         self.speed_5m.event(value).await;
         self.speed_15m.event(value).await;
         self.speed_30m.event(value).await;
         self.speed_1h.event(value).await;
-        self.next_difficulty =
-            ((self.current_difficulty as f64 * f64::sqrt(self.speed_1m.speed().await * 20f64)) as u64).max(1);
+        self.next_difficulty = ((self.speed_1m.speed().await * 20.0) as u64).max(1);
         debug!("add_share took {} us", now.elapsed().as_micros());
     }
 
     pub async fn next_difficulty(&mut self) -> u64 {
-        match self.current_difficulty.cmp(&self.next_difficulty) {
-            cmp::Ordering::Less => {
-                self.speed_1m.reset().await;
-                self.current_difficulty = self.next_difficulty;
-            }
-            cmp::Ordering::Greater => {
-                self.current_difficulty = ((0.9 * self.current_difficulty as f64) as u64).max(1);
-            }
-            _ => {}
-        }
+        self.current_difficulty = self.next_difficulty;
         self.current_difficulty
     }
 
@@ -148,21 +137,17 @@ impl PoolState {
 
     pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
-        self.speed_1m.event(1).await;
+        self.speed_1m.event(value).await;
         self.speed_5m.event(value).await;
         self.speed_15m.event(value).await;
         self.speed_30m.event(value).await;
         self.speed_1h.event(value).await;
-        self.next_global_difficulty_modifier =
-            (self.current_global_difficulty_modifier * (self.speed_1m.speed().await / 10f64)).max(1f64);
+        self.next_global_difficulty_modifier = (self.speed_1m.speed().await / 10.0).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
     }
 
     pub async fn next_global_difficulty_modifier(&mut self) -> f64 {
-        if self.current_global_difficulty_modifier < self.next_global_difficulty_modifier {
-            self.speed_1m.reset().await;
-        }
         self.current_global_difficulty_modifier = self.next_global_difficulty_modifier;
         self.current_global_difficulty_modifier
     }

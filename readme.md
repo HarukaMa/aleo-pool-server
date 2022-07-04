@@ -24,7 +24,7 @@ Undergoing a lot of rewrite:
 
 - ~~Use RDBMS instead of RocksDB for most of the data storage~~
 - Use a real stratum protocol for pool - miner communication
-- Rework the difficulty targeting system
+- ~~Rework the difficulty targeting system~~
 - Decide if more API endpoints are needed -- many of the work should be offloaded to frontends
 - Payout system step 1 - allocate rewards to provers after confirmation
 - Payout system step 2 - send rewards to provers (indefinitely delayed until the network is ready)

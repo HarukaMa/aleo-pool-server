@@ -63,6 +63,7 @@ impl Speedometer {
         speed
     }
 
+    #[allow(dead_code)]
     pub async fn reset(&self) {
         self.storage.write().await.clear();
     }
