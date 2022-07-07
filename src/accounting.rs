@@ -242,7 +242,7 @@ impl Accounting {
     }
 
     pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
-        if !cfg!(db) {
+        if !cfg!(feature = "db") {
             return Ok(json!({ "blocks": Vec::<Value>::new() }));
         }
 
