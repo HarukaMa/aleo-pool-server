@@ -1,6 +1,6 @@
 [package]
 name = "aleo-pool-server"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,7 +15,7 @@ snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-po
 snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-pool-staging"}
 tracing = "0.1.35"
 tracing-log = "0.1.3"
-tracing-subscriber = "0.3.11"
+tracing-subscriber = "0.3.14"
 futures = "0.3.21"
 futures-util = "0.3.21"
 rand = "0.8.5"
@@ -52,11 +52,11 @@ version = "0.12.1"
 features = ["serde"]
 
 [dependencies.serde]
-version = "1.0.137"
+version = "1.0.138"
 features = ["rc"]
 
 [dependencies.serde_json]
-version = "1.0.81"
+version = "1.0.82"
 features = ["preserve_order"]
 
 [dependencies.tokio]
@@ -78,7 +78,7 @@ version = "0.3.1"
 features = ["futures-v0_3"]
 
 [dependencies.clap]
-version = "3.2.7"
+version = "3.2.8"
 features = ["derive"]
 
 [profile.dev]

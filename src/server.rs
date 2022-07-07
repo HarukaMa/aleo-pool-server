@@ -35,7 +35,7 @@ use aleo_stratum::message::StratumMessage;
 struct ProverState {
     peer_addr: SocketAddr,
     address: Address<Testnet2>,
-    speed_1m: Speedometer,
+    speed_2m: Speedometer,
     speed_5m: Speedometer,
     speed_15m: Speedometer,
     speed_30m: Speedometer,
@@ -50,7 +50,7 @@ impl ProverState {
         Self {
             peer_addr,
             address,
-            speed_1m: Speedometer::init(Duration::from_secs(60)),
+            speed_2m: Speedometer::init(Duration::from_secs(120)),
             speed_5m: Speedometer::init_with_cache(Duration::from_secs(60 * 5), Duration::from_secs(30)),
             speed_15m: Speedometer::init_with_cache(Duration::from_secs(60 * 15), Duration::from_secs(30)),
             speed_30m: Speedometer::init_with_cache(Duration::from_secs(60 * 30), Duration::from_secs(30)),
@@ -63,12 +63,12 @@ impl ProverState {
 
     pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
-        self.speed_1m.event(value).await;
+        self.speed_2m.event(value).await;
         self.speed_5m.event(value).await;
         self.speed_15m.event(value).await;
         self.speed_30m.event(value).await;
         self.speed_1h.event(value).await;
-        self.next_difficulty = ((self.speed_1m.speed().await * 20.0) as u64).max(1);
+        self.next_difficulty = ((self.speed_2m.speed().await * 20.0) as u64).max(1);
         debug!("add_share took {} us", now.elapsed().as_micros());
     }
 
