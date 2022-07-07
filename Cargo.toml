@@ -35,6 +35,7 @@ semver = "1.0.12"
 hex = "0.4.3"
 rayon = "1.5.3"
 num_cpus = "1.13.1"
+erased-serde = "0.3.21"
 
 [dependencies.aleo-stratum]
 path = "./stratum"

@@ -23,6 +23,9 @@ impl Default for StratumCodec {
 #[derive(Serialize, Deserialize)]
 struct NotifyParams(String, String, String, String, String, String, bool);
 
+#[derive(Serialize, Deserialize)]
+struct SubscribeParams(String, String, Option<String>);
+
 pub enum ResponseParams {
     Bool(bool),
     Array(Vec<Box<dyn ErasedSerialize + Send + Sync>>),
@@ -76,11 +79,11 @@ impl Encoder<StratumMessage> for StratumCodec {
 
     fn encode(&mut self, item: StratumMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let bytes = match item {
-            StratumMessage::Subscribe(id, user_agent, protocol_version) => {
+            StratumMessage::Subscribe(id, user_agent, protocol_version, session_id) => {
                 let request = Request {
                     jsonrpc: Version::V2,
                     method: "mining.subscribe",
-                    params: Some(vec![user_agent, protocol_version]),
+                    params: Some(SubscribeParams(user_agent, protocol_version, session_id)),
                     id: Some(id),
                 };
                 serde_json::to_vec(&request).unwrap_or_default()
@@ -184,15 +187,21 @@ impl Decoder for StratumCodec {
             let params = request.params.unwrap_or_default();
             match method {
                 "mining.subscribe" => {
-                    if params.len() != 2 {
+                    if params.len() != 3 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
                     let user_agent = params[0].as_str().unwrap_or_default();
                     let protocol_version = params[1].as_str().unwrap_or_default();
+                    let session_id = match &params[2] {
+                        Value::String(s) => Some(s),
+                        Value::Null => None,
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params")),
+                    };
                     StratumMessage::Subscribe(
                         id.unwrap_or(Id::Num(0)),
                         user_agent.to_string(),
                         protocol_version.to_string(),
+                        session_id.cloned(),
                     )
                 }
                 "mining.authorize" => {

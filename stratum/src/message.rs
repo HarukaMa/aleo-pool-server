@@ -2,9 +2,9 @@ use crate::codec::ResponseParams;
 use json_rpc_types::{Error, Id};
 
 pub enum StratumMessage {
-    /// This first version doesn't support vhosts or session preserving.
-    /// (id, user_agent, protocol_version)
-    Subscribe(Id, String, String),
+    /// This first version doesn't support vhosts.
+    /// (id, user_agent, protocol_version, session_id)
+    Subscribe(Id, String, String, Option<String>),
 
     /// (id, worker_name, worker_password)
     Authorize(Id, String, String),

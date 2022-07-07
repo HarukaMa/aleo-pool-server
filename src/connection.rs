@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use aleo_stratum::codec::{ResponseParams, StratumCodec};
 use aleo_stratum::message::StratumMessage;
 use anyhow::{anyhow, Result};
+use erased_serde::Serialize as ErasedSerialize;
 use futures_util::SinkExt;
 use semver::Version;
 use snarkvm::dpc::{testnet2::Testnet2, Address, Network, PoSWProof};
@@ -175,7 +176,7 @@ impl Connection {
             Ok(Some(Ok(message))) => {
                 trace!("Received message {} from peer {:?}", message.name(), peer_addr);
                 match message {
-                    StratumMessage::Subscribe(id, user_agent, protocol_version) => {
+                    StratumMessage::Subscribe(id, user_agent, protocol_version, _) => {
                         let split: Vec<&str> = protocol_version.split('/').collect();
                         if split.len() != 2 {
                             warn!(
@@ -199,8 +200,15 @@ impl Connection {
                             warn!("Unsupported protocol version {} from peer {:?}", version, peer_addr);
                             return Err(anyhow!("Unsupported protocol version"));
                         }
+                        let mut response_params: Vec<Box<dyn ErasedSerialize + Send + Sync>> = Vec::with_capacity(2);
+                        response_params.push(Box::new(Option::<String>::None));
+                        response_params.push(Box::new(Option::<String>::None));
                         framed
-                            .send(StratumMessage::Response(id, Some(ResponseParams::Array(vec![])), None))
+                            .send(StratumMessage::Response(
+                                id,
+                                Some(ResponseParams::Array(response_params)),
+                                None,
+                            ))
                             .await?;
                         Ok((user_agent, version))
                     }

@@ -14,7 +14,7 @@ A mining pool server for the Aleo network.
 
 ## Features
 
-1. A stratum protocol. Specs coming soon.
+1. A stratum protocol. [Specs](stratum/spec.md).
 2. A good enough automatic difficulty targeting system. (Needs more test under high load)
 3. Stats for pool and provers.
 
