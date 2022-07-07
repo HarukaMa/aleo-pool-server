@@ -2,11 +2,13 @@ mod accounting;
 mod api;
 mod cache;
 mod connection;
-mod db;
 mod operator_peer;
 mod server;
 mod speedometer;
 mod state_storage;
+
+#[cfg(feature = "db")]
+mod db;
 
 use std::sync::Arc;
 

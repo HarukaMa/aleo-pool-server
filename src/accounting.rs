@@ -23,10 +23,12 @@ use tracing::{debug, error, info};
 use crate::{
     accounting::AccountingMessage::NewShare,
     cache::Cache,
-    db::DB,
     state_storage::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
+
+#[cfg(feature = "db")]
+use crate::db::DB;
 
 trait PayoutModel {
     fn add_share(&mut self, share: Share);
@@ -110,6 +112,7 @@ pub struct Accounting {
     operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
     pplns_storage: StorageData<Null, PPLNS>,
+    #[cfg(feature = "db")]
     database: Arc<DB>,
     sender: Sender<AccountingMessage>,
     round_cache: TokioRwLock<Cache<Null, (u32, HashMap<String, u64>)>>,
@@ -121,6 +124,8 @@ impl Accounting {
     pub fn init(operator: String) -> Arc<Accounting> {
         let storage = Storage::load();
         let pplns_storage = storage.init_data(StorageType::PPLNS);
+
+        #[cfg(feature = "db")]
         let database = Arc::new(DB::init());
 
         let pplns = Arc::new(TokioRwLock::new(PPLNS::load(pplns_storage.clone())));
@@ -132,6 +137,7 @@ impl Accounting {
             operator: operator_host.into(),
             pplns,
             pplns_storage,
+            #[cfg(feature = "db")]
             database,
             sender,
             round_cache: TokioRwLock::new(Cache::new(Duration::from_secs(10))),
@@ -141,6 +147,7 @@ impl Accounting {
 
         let pplns = accounting.pplns.clone();
         let pplns_storage = accounting.pplns_storage.clone();
+        #[cfg(feature = "db")]
         let database = accounting.database.clone();
         let exit_lock = accounting.exit_lock.clone();
         task::spawn(async move {
@@ -158,6 +165,7 @@ impl Accounting {
                         let pplns = pplns.read().await.clone();
                         let (_, address_shares) = Accounting::pplns_to_provers_shares(&pplns);
 
+                        #[cfg(feature = "db")]
                         if let Err(e) = database.save_block(height, block_hash, reward, address_shares).await {
                             error!("Failed to save block reward : {}", e);
                         } else {
@@ -234,6 +242,10 @@ impl Accounting {
     }
 
     pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
+        if !cfg!(db) {
+            return Ok(json!({ "blocks": Vec::<Value>::new() }));
+        }
+
         let client = reqwest::Client::new();
         let latest_block_height: u32 = client
             .post(format!("http://{}:3032", self.operator))
@@ -255,9 +267,12 @@ impl Accounting {
             "method": "getminedblockinfo",
             "id": 1,
         });
+        #[cfg(feature = "db")]
         let blocks = self.database.get_blocks(limit, page).await?;
         let shares = match with_shares {
-            true => {
+            true =>
+            {
+                #[cfg(feature = "db")]
                 self.database
                     .get_block_shares(blocks.iter().map(|b| b.0).collect())
                     .await?
@@ -265,8 +280,9 @@ impl Accounting {
             false => Default::default(),
         };
 
-        let mut res = Vec::with_capacity(limit as usize);
+        let mut res = Vec::<Value>::with_capacity(limit as usize);
 
+        #[cfg(feature = "db")]
         for (id, height, block_hash, mut is_canonical, reward) in blocks {
             let cache_result = self.block_canonical_cache.read().await.get(block_hash.clone());
             if cache_result.is_none() {

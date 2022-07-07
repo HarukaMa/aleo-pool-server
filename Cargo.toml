@@ -5,6 +5,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["db"]
+db = [
+    "deadpool-postgres",
+    "tokio-postgres"
+]
+
 [dependencies]
 #snarkvm = { path = "../../src/snarkVM" }
 snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
@@ -28,7 +35,6 @@ signal-hook = "0.3.14"
 bytes = "1.1.0"
 byteorder = "1.4.3"
 warp = "0.3.2"
-tokio-postgres = "0.7.6"
 dotenv = "0.15.0"
 json-rpc-types = "1.0.3"
 semver = "1.0.12"
@@ -40,8 +46,13 @@ erased-serde = "0.3.21"
 [dependencies.aleo-stratum]
 path = "./stratum"
 
+[dependencies.tokio-postgres]
+version = "0.7.6"
+optional = true
+
 [dependencies.deadpool-postgres]
 version = "0.10.2"
+optional = true
 features = ["rt_tokio_1"]
 
 [dependencies.reqwest]
