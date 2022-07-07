@@ -290,7 +290,7 @@ impl Accounting {
                         .await?;
                     is_canonical = node_canonical;
                 }
-                if result["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
+                if is_canonical && result["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
                     bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
                 }
                 self.block_canonical_cache
