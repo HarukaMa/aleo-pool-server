@@ -32,6 +32,7 @@ dependencies = [
 name = "aleo-pool-server"
 version = "0.0.2"
 dependencies = [
+ "aleo-stratum",
  "anyhow",
  "bincode",
  "byteorder",
@@ -42,10 +43,15 @@ dependencies = [
  "dotenv",
  "futures",
  "futures-util",
+ "hex",
+ "json-rpc-types",
+ "num_cpus",
  "parking_lot",
  "rand",
+ "rayon",
  "reqwest",
  "rocksdb",
+ "semver",
  "serde",
  "serde_json",
  "signal-hook",
@@ -128,6 +134,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5edd669f91f0e6f9fd14aa9489fb64fff760723ee4c73c4e93f721f11aaf62e7"
 dependencies = [
  "colored",
+]
+
+[[package]]
+name = "aleo-stratum"
+version = "1.0.0"
+dependencies = [
+ "bytes",
+ "erased-serde",
+ "json-rpc-types",
+ "serde",
+ "serde_json",
+ "tokio-util 0.7.3",
 ]
 
 [[package]]
@@ -743,6 +761,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "erased-serde"
+version = "0.3.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81d013529d5574a60caeda29e179e695125448e5de52e3874f7b4c1d7360e18e"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1176,6 +1203,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3fac17f7123a73ca62df411b1bf727ccc805daa070338fda671c86dac1bdc27"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "json-rpc-types"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3890d4363efba3cd8a2fa2871ea3cd975cbaab25fca51344645950f950c4d7b"
+dependencies = [
+ "serde",
+ "str-buf",
 ]
 
 [[package]]
@@ -2039,24 +2076,24 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d92beeab217753479be2f74e54187a6aed4c125ff0703a866c3147a02f0c6dd"
+checksum = "a2333e6df6d6598f2b1974829f853c2b4c5f4a6e503c10af918081aa6f8564e1"
 
 [[package]]
 name = "serde"
-version = "1.0.137"
+version = "1.0.138"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61ea8d54c77f8315140a05f4c7237403bf38b72704d031543aa1d16abbf517d1"
+checksum = "1578c6245786b9d168c5447eeacfb96856573ca56c9d68fdcf394be134882a47"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.137"
+version = "1.0.138"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f26faba0c3959972377d3b2d306ee9f71faee9714294e41bb777f83f88578be"
+checksum = "023e9b1467aef8a10fb88f25611870ada9800ef7e22afce356bb0d2387b6f27c"
 dependencies = [
  "proc-macro2 1.0.40",
  "quote 1.0.20",
@@ -2065,9 +2102,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.81"
+version = "1.0.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b7ce2b32a1aed03c558dc61a5cd328f15aff2dbc17daad8fb8af04d2100e15c"
+checksum = "82c2c1fdcd807d1098552c5b9a36e425e42e9fbd7c6a37a8425f390f781f7fa7"
 dependencies = [
  "indexmap",
  "itoa",
@@ -2550,6 +2587,15 @@ checksum = "66d72b759436ae32898a2af0a14218dbf55efde3feeb170eb623637db85ee1e0"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "str-buf"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0873cb29201126440dcc78d0b1f5a13d917e78831778429a7920ca9c7f3dae1e"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

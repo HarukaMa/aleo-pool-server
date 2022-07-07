@@ -3,7 +3,6 @@ mod api;
 mod cache;
 mod connection;
 mod db;
-mod message;
 mod operator_peer;
 mod server;
 mod speedometer;
@@ -88,6 +87,12 @@ async fn main() {
     } else {
         tracing::subscriber::set_global_default(subscriber).expect("unable to set global default subscriber");
     }
+
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(8 * 1024 * 1024)
+        .num_threads(num_cpus::get())
+        .build_global()
+        .unwrap();
 
     let operator = opt.operator;
     let port = opt.port;

@@ -14,16 +14,16 @@ pub struct DB {
 impl DB {
     pub fn init() -> DB {
         let mut cfg = Config::new();
-        cfg.host = Some(env::var("DB_HOST").unwrap_or_else(|_| panic!("No database host defined")));
+        cfg.host = Some(env::var("DB_HOST").expect("No database host defined"));
         cfg.port = Some(
             env::var("DB_PORT")
                 .unwrap_or_else(|_| "5432".to_string())
                 .parse::<u16>()
-                .unwrap_or_else(|_| panic!("Invalid database port")),
+                .expect("Invalid database port"),
         );
-        cfg.dbname = Some(env::var("DB_DATABASE").unwrap_or_else(|_| panic!("No database name defined")));
-        cfg.user = Some(env::var("DB_USER").unwrap_or_else(|_| panic!("No database user defined")));
-        cfg.password = Some(env::var("DB_PASSWORD").unwrap_or_else(|_| panic!("No database password defined")));
+        cfg.dbname = Some(env::var("DB_DATABASE").expect("No database name defined"));
+        cfg.user = Some(env::var("DB_USER").expect("No database user defined"));
+        cfg.password = Some(env::var("DB_PASSWORD").expect("No database password defined"));
         let schema = env::var("DB_SCHEMA").unwrap_or_else(|_| {
             warn!("Using schema public as default");
             "public".to_string()
@@ -33,7 +33,7 @@ impl DB {
         });
         let pool = cfg
             .create_pool(Some(Runtime::Tokio1), NoTls)
-            .unwrap_or_else(|_| panic!("Failed to create database connection pool"));
+            .expect("Failed to create database connection pool");
         DB { connection_pool: pool }
     }
 

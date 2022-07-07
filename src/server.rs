@@ -1,3 +1,4 @@
+use json_rpc_types::{Error, ErrorCode, Id};
 use snarkos::environment::network::Data;
 use std::{
     collections::{HashMap, HashSet},
@@ -10,11 +11,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use aleo_stratum::codec::ResponseParams;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
     traits::Network,
     utilities::{to_bytes_le, ToBytes},
 };
+use snarkvm_algorithms::merkle_tree::MerkleTree;
 use snarkvm_algorithms::traits::crh::CRH;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -26,10 +29,8 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{
-    connection::Connection, message::ProverMessage, operator_peer::OperatorMessage, speedometer::Speedometer,
-    AccountingMessage,
-};
+use crate::{connection::Connection, operator_peer::OperatorMessage, speedometer::Speedometer, AccountingMessage};
+use aleo_stratum::message::StratumMessage;
 
 struct ProverState {
     peer_addr: SocketAddr,
@@ -170,9 +171,15 @@ impl PoolState {
 #[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     ProverConnected(TcpStream, SocketAddr),
-    ProverAuthenticated(SocketAddr, Address<Testnet2>, Sender<ProverMessage>),
+    ProverAuthenticated(SocketAddr, Address<Testnet2>, Sender<StratumMessage>),
     ProverDisconnected(SocketAddr),
-    ProverSubmit(SocketAddr, u32, <Testnet2 as Network>::PoSWNonce, PoSWProof<Testnet2>),
+    ProverSubmit(
+        Id,
+        SocketAddr,
+        u32,
+        <Testnet2 as Network>::PoSWNonce,
+        PoSWProof<Testnet2>,
+    ),
     NewBlockTemplate(BlockTemplate<Testnet2>),
     Exit,
 }
@@ -180,11 +187,11 @@ pub enum ServerMessage {
 impl ServerMessage {
     fn name(&self) -> &'static str {
         match self {
-            ServerMessage::ProverConnected(_, _) => "ProverConnected",
-            ServerMessage::ProverAuthenticated(_, _, _) => "ProverAuthenticated",
-            ServerMessage::ProverDisconnected(_) => "ProverDisconnected",
-            ServerMessage::ProverSubmit(_, _, _, _) => "ProverSubmit",
-            ServerMessage::NewBlockTemplate(_) => "NewBlockTemplate",
+            ServerMessage::ProverConnected(..) => "ProverConnected",
+            ServerMessage::ProverAuthenticated(..) => "ProverAuthenticated",
+            ServerMessage::ProverDisconnected(..) => "ProverDisconnected",
+            ServerMessage::ProverSubmit(..) => "ProverSubmit",
+            ServerMessage::NewBlockTemplate(..) => "NewBlockTemplate",
             ServerMessage::Exit => "Exit",
         }
     }
@@ -196,17 +203,20 @@ impl Display for ServerMessage {
     }
 }
 
+type BlockHeaderTree = MerkleTree<<Testnet2 as Network>::BlockHeaderRootParameters>;
+
 pub struct Server {
     sender: Sender<ServerMessage>,
     operator_sender: Sender<OperatorMessage>,
     accounting_sender: Sender<AccountingMessage>,
     connected_provers: RwLock<HashSet<SocketAddr>>,
-    authenticated_provers: Arc<RwLock<HashMap<SocketAddr, Sender<ProverMessage>>>>,
+    authenticated_provers: Arc<RwLock<HashMap<SocketAddr, Sender<StratumMessage>>>>,
     pool_state: Arc<RwLock<PoolState>>,
     prover_states: Arc<RwLock<HashMap<SocketAddr, RwLock<ProverState>>>>,
     prover_address_connections: Arc<RwLock<HashMap<Address<Testnet2>, HashSet<SocketAddr>>>>,
     latest_block_height: AtomicU32,
     latest_block_template: Arc<RwLock<Option<BlockTemplate<Testnet2>>>>,
+    latest_block_template_header_tree: Arc<RwLock<Option<BlockHeaderTree>>>,
 }
 
 impl Server {
@@ -239,6 +249,7 @@ impl Server {
             prover_address_connections: Default::default(),
             latest_block_height: AtomicU32::new(0),
             latest_block_template: Default::default(),
+            latest_block_template_header_tree: Default::default(),
         });
 
         let s = server.clone();
@@ -299,9 +310,23 @@ impl Server {
                     pac_write.insert(address, HashSet::from([peer_addr]));
                 }
                 drop(pac_write);
-                if let Some(block_template) = self.latest_block_template.read().await.clone() {
+                if let Err(e) = sender.send(StratumMessage::SetTarget(u64::MAX)).await {
+                    error!("Error sending initial target to prover: {}", e);
+                }
+                if let Some(header_tree) = self.latest_block_template_header_tree.read().await.as_ref() {
+                    let header_root = header_tree.root();
+                    let hashed_leaves = header_tree.hashed_leaves();
+                    let job_id = hex::encode(self.latest_block_height.load(Ordering::SeqCst).to_le_bytes());
                     if let Err(e) = sender
-                        .send(ProverMessage::Notify(block_template.clone(), u64::MAX))
+                        .send(StratumMessage::Notify(
+                            job_id,
+                            hex::encode(header_root.to_bytes_le().unwrap()),
+                            hex::encode(hashed_leaves[0].to_bytes_le().unwrap()),
+                            hex::encode(hashed_leaves[1].to_bytes_le().unwrap()),
+                            hex::encode(hashed_leaves[2].to_bytes_le().unwrap()),
+                            hex::encode(hashed_leaves[3].to_bytes_le().unwrap()),
+                            true,
+                        ))
                         .await
                     {
                         error!(
@@ -335,6 +360,13 @@ impl Server {
                 self.latest_block_height
                     .store(block_template.block_height(), Ordering::SeqCst);
                 self.latest_block_template.write().await.replace(block_template.clone());
+                let header_tree = block_template
+                    .to_header_tree()
+                    .expect("Could not create header tree from block template");
+                self.latest_block_template_header_tree
+                    .write()
+                    .await
+                    .replace(header_tree);
                 if let Err(e) = self
                     .accounting_sender
                     .send(AccountingMessage::SetN(
@@ -346,6 +378,15 @@ impl Server {
                 }
                 let global_difficulty_modifier = self.pool_state.write().await.next_global_difficulty_modifier().await;
                 debug!("Global difficulty modifier: {}", global_difficulty_modifier);
+                let header_tree = block_template.to_header_tree().unwrap();
+                let header_root = header_tree.root();
+                let hashed_leaves = header_tree.hashed_leaves();
+                let job_id = hex::encode(block_template.block_height().to_le_bytes());
+                let header_root_hex = hex::encode(header_root.to_bytes_le().unwrap());
+                let hashed_leaf_0 = hex::encode(hashed_leaves[0].to_bytes_le().unwrap());
+                let hashed_leaf_1 = hex::encode(hashed_leaves[1].to_bytes_le().unwrap());
+                let hashed_leaf_2 = hex::encode(hashed_leaves[2].to_bytes_le().unwrap());
+                let hashed_leaf_3 = hex::encode(hashed_leaves[3].to_bytes_le().unwrap());
                 for (peer_addr, sender) in self.authenticated_provers.read().await.clone().iter() {
                     let states = self.prover_states.read().await;
                     let prover_state = match states.get(peer_addr) {
@@ -357,18 +398,32 @@ impl Server {
                     };
 
                     let prover_display = format!("{}", prover_state.read().await);
-                    let difficulty =
+                    let current_difficulty = prover_state.read().await.current_difficulty();
+                    let next_difficulty =
                         (prover_state.write().await.next_difficulty().await as f64 * global_difficulty_modifier) as u64;
                     drop(states);
+                    if current_difficulty != next_difficulty {
+                        if let Err(e) = sender.send(StratumMessage::SetTarget(u64::MAX / next_difficulty)).await {
+                            error!("Error sending difficulty target to prover {}: {}", prover_display, e);
+                        }
+                    }
                     if let Err(e) = sender
-                        .send(ProverMessage::Notify(block_template.clone(), u64::MAX / difficulty))
+                        .send(StratumMessage::Notify(
+                            job_id.clone(),
+                            header_root_hex.clone(),
+                            hashed_leaf_0.clone(),
+                            hashed_leaf_1.clone(),
+                            hashed_leaf_2.clone(),
+                            hashed_leaf_3.clone(),
+                            true,
+                        ))
                         .await
                     {
                         error!("Error sending block template to prover {}: {}", prover_display, e);
                     }
                 }
             }
-            ServerMessage::ProverSubmit(peer_addr, block_height, nonce, proof) => {
+            ServerMessage::ProverSubmit(id, peer_addr, block_height, nonce, proof) => {
                 let prover_states = self.prover_states.clone();
                 let pool_state = self.pool_state.clone();
                 let authenticated_provers = self.authenticated_provers.clone();
@@ -379,8 +434,28 @@ impl Server {
                 let accounting_sender = self.accounting_sender.clone();
                 let operator_sender = self.operator_sender.clone();
                 task::spawn(async move {
-                    async fn send_result(sender: &Sender<ProverMessage>, result: bool, desc: Option<String>) {
-                        if let Err(e) = sender.send(ProverMessage::SubmitResult(result, desc)).await {
+                    async fn send_result(
+                        sender: &Sender<StratumMessage>,
+                        id: Id,
+                        result: bool,
+                        error_code: Option<ErrorCode>,
+                        desc: Option<String>,
+                    ) {
+                        if result {
+                            if let Err(e) = sender
+                                .send(StratumMessage::Response(id, Some(ResponseParams::Bool(true)), None))
+                                .await
+                            {
+                                error!("Error sending result to prover: {}", e);
+                            }
+                        } else if let Err(e) = sender
+                            .send(StratumMessage::Response(
+                                id,
+                                None,
+                                Some(Error::with_custom_msg(error_code.unwrap(), desc.unwrap().as_str())),
+                            ))
+                            .await
+                        {
                             error!("Error sending result to prover: {}", e);
                         }
                     }
@@ -397,7 +472,14 @@ impl Server {
                         Some(state) => state,
                         None => {
                             error!("Received proof from unknown prover: {}", peer_addr);
-                            send_result(sender, false, Some("Unknown prover".to_string())).await;
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(24)),
+                                Some("Unknown prover".to_string()),
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -409,7 +491,14 @@ impl Server {
                                 "Received proof from prover {} while no block template is available",
                                 prover_display
                             );
-                            send_result(sender, false, Some("No block template".to_string())).await;
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(21)),
+                                Some("No block template".to_string()),
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -418,12 +507,26 @@ impl Server {
                             "Received stale proof from prover {} with block height: {} (expected {})",
                             prover_display, block_height, latest_block_height
                         );
-                        send_result(sender, false, Some("Stale proof".to_string())).await;
+                        send_result(
+                            sender,
+                            id,
+                            false,
+                            Some(ErrorCode::from_code(21)),
+                            Some("Stale proof".to_string()),
+                        )
+                        .await;
                         return;
                     }
                     if prover_state.write().await.seen_nonce(nonce) {
                         warn!("Received duplicate nonce from prover {}", prover_display);
-                        send_result(sender, false, Some("Duplicate nonce".to_string())).await;
+                        send_result(
+                            sender,
+                            id,
+                            false,
+                            Some(ErrorCode::from_code(22)),
+                            Some("Duplicate nonce".to_string()),
+                        )
+                        .await;
                         return;
                     }
                     let difficulty = (prover_state.read().await.current_difficulty() as f64
@@ -433,7 +536,14 @@ impl Server {
                         Ok(difficulty) => difficulty,
                         Err(e) => {
                             warn!("Received invalid proof from prover {}: {}", prover_display, e);
-                            send_result(sender, false, Some("No difficulty".to_string())).await;
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(23)),
+                                Some("No difficulty".to_string()),
+                            )
+                            .await;
                             return;
                         }
                     };
@@ -442,7 +552,14 @@ impl Server {
                             "Received proof with difficulty {} from prover {} (expected 8{})",
                             proof_difficulty, prover_display, difficulty_target
                         );
-                        send_result(sender, false, Some("Difficulty target not met".to_string())).await;
+                        send_result(
+                            sender,
+                            id,
+                            false,
+                            Some(ErrorCode::from_code(23)),
+                            Some("Difficulty target not met".to_string()),
+                        )
+                        .await;
                         return;
                     }
                     if !Testnet2::posw().verify(
@@ -452,7 +569,14 @@ impl Server {
                         &proof,
                     ) {
                         warn!("Received invalid proof from prover {}", prover_display);
-                        send_result(sender, false, Some("Invalid proof".to_string())).await;
+                        send_result(
+                            sender,
+                            id,
+                            false,
+                            Some(ErrorCode::from_code(26)),
+                            Some("Invalid proof".to_string()),
+                        )
+                        .await;
                         return;
                     }
                     prover_state.write().await.add_share(difficulty).await;
@@ -466,7 +590,7 @@ impl Server {
                     {
                         error!("Failed to send accounting message: {}", e);
                     }
-                    send_result(sender, true, None).await;
+                    send_result(sender, id, true, None, None).await;
                     drop(provers);
                     drop(states);
                     info!(
