@@ -256,7 +256,7 @@ impl Decoder for StratumCodec {
                 }
             }
         } else {
-            let response = serde_json::from_slice::<Response<ResponseParams, ()>>(&bytes)
+            let response = serde_json::from_value::<Response<ResponseParams, ()>>(json)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let id = response.id;
             match response.payload {
