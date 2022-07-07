@@ -76,7 +76,9 @@ impl DB {
             return Ok(vec![]);
         }
         let last_id: i32 = row.first().unwrap().get("id");
-        let stmt = conn.prepare("SELECT * FROM block WHERE id <= $1 AND id > $2").await?;
+        let stmt = conn
+            .prepare("SELECT * FROM block WHERE id <= $1 AND id > $2 ORDER BY id DESC")
+            .await?;
         let rows = conn
             .query(&stmt, &[&last_id, &(last_id - page as i32 * limit as i32)])
             .await?;

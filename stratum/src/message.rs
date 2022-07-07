@@ -31,12 +31,12 @@ pub enum StratumMessage {
 impl StratumMessage {
     pub fn name(&self) -> &'static str {
         match self {
-            StratumMessage::Subscribe(_, _, _) => "mining.subscribe",
-            StratumMessage::Authorize(_, _, _) => "mining.authorize",
-            StratumMessage::SetTarget(_) => "mining.set_target",
-            StratumMessage::Notify(_, _, _, _, _, _, _) => "mining.notify",
-            StratumMessage::Submit(_, _, _, _, _) => "mining.submit",
-            StratumMessage::Response(_, _, _) => "mining.response",
+            StratumMessage::Subscribe(..) => "mining.subscribe",
+            StratumMessage::Authorize(..) => "mining.authorize",
+            StratumMessage::SetTarget(..) => "mining.set_target",
+            StratumMessage::Notify(..) => "mining.notify",
+            StratumMessage::Submit(..) => "mining.submit",
+            StratumMessage::Response(..) => "mining.response",
         }
     }
 }

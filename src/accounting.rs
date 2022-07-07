@@ -160,8 +160,9 @@ impl Accounting {
 
                         if let Err(e) = database.save_block(height, block_hash, reward, address_shares).await {
                             error!("Failed to save block reward : {}", e);
+                        } else {
+                            info!("Recorded block {}", height);
                         }
-                        info!("Recorded block {}", height);
                     }
                     Exit => {
                         receiver.close();

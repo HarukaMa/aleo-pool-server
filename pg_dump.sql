@@ -172,6 +172,13 @@ ALTER TABLE ONLY pool.share
 
 
 --
+-- Name: block_block_hash_uindex; Type: INDEX; Schema: pool; Owner: -
+--
+
+CREATE UNIQUE INDEX block_block_hash_uindex ON pool.block USING btree (block_hash);
+
+
+--
 -- Name: payout_miner_index; Type: INDEX; Schema: pool; Owner: -
 --
 
