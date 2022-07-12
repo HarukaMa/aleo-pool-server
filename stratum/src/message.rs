@@ -1,5 +1,6 @@
-use crate::codec::ResponseParams;
 use json_rpc_types::{Error, Id};
+
+use crate::codec::ResponseParams;
 
 pub enum StratumMessage {
     /// This first version doesn't support vhosts.

@@ -43,6 +43,12 @@ rayon = "1.5.3"
 num_cpus = "1.13.1"
 erased-serde = "0.3.21"
 
+[dependencies.speedometer]
+path = "./speedometer"
+
+[dependencies.cache]
+path = "./cache"
+
 [dependencies.aleo-stratum]
 path = "./stratum"
 

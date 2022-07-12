@@ -1,10 +1,8 @@
 mod accounting;
 mod api;
-mod cache;
 mod connection;
 mod operator_peer;
 mod server;
-mod speedometer;
 mod state_storage;
 
 #[cfg(feature = "db")]

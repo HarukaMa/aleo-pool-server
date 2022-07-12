@@ -37,6 +37,7 @@ dependencies = [
  "bincode",
  "byteorder",
  "bytes",
+ "cache",
  "clap",
  "deadpool-postgres",
  "dirs",
@@ -61,6 +62,7 @@ dependencies = [
  "snarkos-storage",
  "snarkvm",
  "snarkvm-algorithms",
+ "speedometer",
  "tokio",
  "tokio-postgres",
  "tokio-stream",
@@ -362,6 +364,10 @@ dependencies = [
  "libc",
  "pkg-config",
 ]
+
+[[package]]
+name = "cache"
+version = "0.1.0"
 
 [[package]]
 name = "cassowary"
@@ -2588,6 +2594,13 @@ checksum = "66d72b759436ae32898a2af0a14218dbf55efde3feeb170eb623637db85ee1e0"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "speedometer"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]

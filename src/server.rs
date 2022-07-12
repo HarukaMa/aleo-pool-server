@@ -1,5 +1,3 @@
-use json_rpc_types::{Error, ErrorCode, Id};
-use snarkos::environment::network::Data;
 use std::{
     collections::{HashMap, HashSet},
     fmt::{Display, Formatter},
@@ -11,14 +9,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aleo_stratum::codec::ResponseParams;
+use aleo_stratum::{codec::ResponseParams, message::StratumMessage};
+use json_rpc_types::{Error, ErrorCode, Id};
+use snarkos::environment::network::Data;
 use snarkvm::{
     dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
     traits::Network,
     utilities::{to_bytes_le, ToBytes},
 };
-use snarkvm_algorithms::merkle_tree::MerkleTree;
-use snarkvm_algorithms::traits::crh::CRH;
+use snarkvm_algorithms::{merkle_tree::MerkleTree, traits::crh::CRH};
+use speedometer::Speedometer;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
@@ -29,8 +29,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{connection::Connection, operator_peer::OperatorMessage, speedometer::Speedometer, AccountingMessage};
-use aleo_stratum::message::StratumMessage;
+use crate::{connection::Connection, operator_peer::OperatorMessage, AccountingMessage};
 
 struct ProverState {
     peer_addr: SocketAddr,

@@ -1,11 +1,13 @@
-use crate::message::StratumMessage;
+use std::io;
+
 use bytes::BytesMut;
 use erased_serde::Serialize as ErasedSerialize;
 use json_rpc_types::{Id, Request, Response, Version};
 use serde::{ser::SerializeSeq, Deserialize, Serialize};
 use serde_json::Value;
-use std::io;
 use tokio_util::codec::{AnyDelimiterCodec, Decoder, Encoder};
+
+use crate::message::StratumMessage;
 
 pub struct StratumCodec {
     codec: AnyDelimiterCodec,
@@ -161,8 +163,8 @@ impl Encoder<StratumMessage> for StratumCodec {
 }
 
 impl Decoder for StratumCodec {
-    type Item = StratumMessage;
     type Error = io::Error;
+    type Item = StratumMessage;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let string = self

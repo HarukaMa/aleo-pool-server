@@ -5,11 +5,14 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
+use cache::Cache;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use snarkvm::dpc::AleoAmount;
-use snarkvm::{dpc::testnet2::Testnet2, traits::Network};
+use snarkvm::{
+    dpc::{testnet2::Testnet2, AleoAmount},
+    traits::Network,
+};
 use tokio::{
     sync::{
         mpsc::{channel, Sender},
@@ -20,15 +23,13 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
+#[cfg(feature = "db")]
+use crate::db::DB;
 use crate::{
     accounting::AccountingMessage::NewShare,
-    cache::Cache,
     state_storage::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
-
-#[cfg(feature = "db")]
-use crate::db::DB;
 
 trait PayoutModel {
     fn add_share(&mut self, share: Share);
@@ -241,13 +242,9 @@ impl Accounting {
         })
     }
 
-    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
-        if !cfg!(feature = "db") {
-            return Ok(json!({ "blocks": Vec::<Value>::new() }));
-        }
-
+    async fn get_latest_block_height(&self) -> Result<u32> {
         let client = reqwest::Client::new();
-        let latest_block_height: u32 = client
+        Ok(client
             .post(format!("http://{}:3032", self.operator))
             .json(&json!({
                 "jsonrpc": "2.0",
@@ -260,7 +257,16 @@ impl Accounting {
             .json::<Value>()
             .await?["result"]
             .as_u64()
-            .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32;
+            .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32)
+    }
+
+    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
+        if !cfg!(feature = "db") {
+            return Ok(json!({ "blocks": Vec::<Value>::new() }));
+        }
+
+        let client = reqwest::Client::new();
+        let latest_block_height: u32 = self.get_latest_block_height().await?;
         let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
