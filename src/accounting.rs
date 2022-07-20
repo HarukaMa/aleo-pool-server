@@ -108,6 +108,9 @@ pub enum AccountingMessage {
     Exit,
 }
 
+#[cfg(feature = "db")]
+static PAY_INTERVAL: Duration = Duration::from_secs(60);
+
 #[allow(clippy::type_complexity)]
 pub struct Accounting {
     operator: String,
@@ -194,7 +197,13 @@ impl Accounting {
             }
         });
 
-        Arc::new(accounting)
+        let res = Arc::new(accounting);
+
+        // payout routine
+        #[cfg(feature = "db")]
+        task::spawn(Accounting::payout_loop(res.clone()));
+
+        res
     }
 
     pub fn sender(&self) -> Sender<AccountingMessage> {
@@ -260,19 +269,53 @@ impl Accounting {
             .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32)
     }
 
-    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
-        if !cfg!(feature = "db") {
-            return Ok(json!({ "blocks": Vec::<Value>::new() }));
-        }
-
+    async fn update_block_canonical(
+        &self,
+        height: u32,
+        block_hash: String,
+        was_canonical: bool,
+        reward: i64,
+    ) -> Result<bool> {
         let client = reqwest::Client::new();
-        let latest_block_height: u32 = self.get_latest_block_height().await?;
-        let mut obj = serde_json::Map::new();
         let jsonrpc = json!({
             "jsonrpc": "2.0",
             "method": "getminedblockinfo",
             "id": 1,
         });
+        let object = match jsonrpc.clone() {
+            Value::Object(object) => object,
+            _ => unreachable!(),
+        };
+        let mut request_json = object;
+        request_json.insert("params".into(), json!([height, block_hash]));
+
+        let result = &client
+            .post(format!("http://{}:3032", self.operator))
+            .json(&request_json)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?["result"];
+        let node_canonical = result["canonical"].as_bool().ok_or_else(|| anyhow!("canonical"))?;
+        let value = result["value"].as_i64().ok_or_else(|| anyhow!("value"))?;
+        if node_canonical != was_canonical {
+            self.database
+                .set_block_canonical(block_hash.clone(), node_canonical)
+                .await?;
+        }
+        if node_canonical && value != reward {
+            bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
+        }
+        Ok(node_canonical)
+    }
+
+    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
+        if !cfg!(feature = "db") {
+            return Ok(json!({ "blocks": Vec::<Value>::new() }));
+        }
+
+        let latest_block_height: u32 = self.get_latest_block_height().await?;
+        let mut obj = serde_json::Map::new();
         #[cfg(feature = "db")]
         let blocks = self.database.get_blocks(limit, page).await?;
         let shares = match with_shares {
@@ -292,30 +335,9 @@ impl Accounting {
         for (id, height, block_hash, mut is_canonical, reward) in blocks {
             let cache_result = self.block_canonical_cache.read().await.get(block_hash.clone());
             if cache_result.is_none() {
-                let object = match jsonrpc.clone() {
-                    Value::Object(object) => object,
-                    _ => unreachable!(),
-                };
-                let mut request_json = object;
-                request_json.insert("params".into(), json!([height, block_hash]));
-
-                let result = &client
-                    .post(format!("http://{}:3032", self.operator))
-                    .json(&request_json)
-                    .send()
-                    .await?
-                    .json::<Value>()
-                    .await?["result"];
-                let node_canonical = result["canonical"].as_bool().ok_or_else(|| anyhow!("canonical"))?;
-                if node_canonical != is_canonical {
-                    self.database
-                        .set_block_canonical(block_hash.clone(), node_canonical)
-                        .await?;
-                    is_canonical = node_canonical;
-                }
-                if is_canonical && result["value"].as_i64().ok_or_else(|| anyhow!("value"))? != reward {
-                    bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
-                }
+                is_canonical = self
+                    .update_block_canonical(height, block_hash.clone(), is_canonical, reward)
+                    .await?;
                 self.block_canonical_cache
                     .write()
                     .await
@@ -344,5 +366,56 @@ impl Accounting {
 
         obj.insert("blocks".into(), json!(res));
         Ok(obj.into())
+    }
+
+    #[cfg(feature = "db")]
+    async fn payout_loop(self: Arc<Accounting>) {
+        'indef: loop {
+            let latest_block_height = match self.get_latest_block_height().await {
+                Ok(height) => height,
+                Err(e) => {
+                    error!("Unable to get latest block height: {}", e);
+                    continue;
+                }
+            };
+            let blocks = self.database.get_should_pay_blocks(latest_block_height).await;
+            if blocks.is_err() {
+                error!("Unable to get should pay blocks: {}", blocks.unwrap_err());
+                sleep(PAY_INTERVAL).await;
+                continue;
+            }
+            for (id, height, block_hash, is_canonical, reward) in blocks.unwrap() {
+                let node_canonical = self
+                    .update_block_canonical(height, block_hash.clone(), is_canonical, reward)
+                    .await;
+                if node_canonical.is_err() {
+                    error!("Unable to update block canonical: {}", node_canonical.unwrap_err());
+                    sleep(PAY_INTERVAL).await;
+                    continue 'indef;
+                }
+                let canonical = node_canonical.unwrap();
+                self.block_canonical_cache
+                    .write()
+                    .await
+                    .set(block_hash.clone(), canonical);
+                if canonical {
+                    match self.database.pay_block(id).await {
+                        Ok(_) => {
+                            info!("Paid block {} ({})", height, block_hash);
+                        }
+                        Err(e) => {
+                            error!("Unable to pay block {}: {}", id, e);
+                            sleep(PAY_INTERVAL).await;
+                            continue 'indef;
+                        }
+                    }
+                }
+            }
+            if let Err(e) = self.database.set_checked_blocks(latest_block_height).await {
+                error!("Unable to set checked blocks: {}", e);
+            }
+
+            sleep(PAY_INTERVAL).await;
+        }
     }
 }

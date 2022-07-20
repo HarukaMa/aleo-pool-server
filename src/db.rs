@@ -1,9 +1,19 @@
+use std::{collections::HashMap, env};
+
 use anyhow::Result;
-use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use snarkvm::dpc::testnet2::Testnet2;
-use snarkvm::dpc::{AleoAmount, Network};
-use std::collections::HashMap;
-use std::env;
+use deadpool_postgres::{
+    ClientWrapper,
+    Config,
+    Hook,
+    HookError,
+    HookErrorCause,
+    Manager,
+    ManagerConfig,
+    Pool,
+    RecyclingMethod,
+    Runtime,
+};
+use snarkvm::dpc::{testnet2::Testnet2, AleoAmount, Network};
 use tokio_postgres::NoTls;
 use tracing::warn;
 
@@ -29,11 +39,29 @@ impl DB {
             "public".to_string()
         });
         cfg.manager = Some(ManagerConfig {
-            recycling_method: RecyclingMethod::Custom(format!("set search_path = {}", schema)),
+            recycling_method: RecyclingMethod::Verified,
         });
-        let pool = cfg
-            .create_pool(Some(Runtime::Tokio1), NoTls)
-            .expect("Failed to create database connection pool");
+        // This is almost like directly using deadpool, but we really need the hooks
+        // The helper methods from deadpool_postgres helps as well
+        let pool = Pool::builder(Manager::from_config(
+            cfg.get_pg_config().expect("Invalid database config"),
+            NoTls,
+            cfg.get_manager_config(),
+        ))
+        .config(cfg.get_pool_config())
+        .post_create(Hook::async_fn(move |client: &mut ClientWrapper, _| {
+            let schema = schema.clone();
+            Box::pin(async move {
+                client
+                    .simple_query(&*format!("set search_path = {}", schema))
+                    .await
+                    .map_err(|e| HookError::Abort(HookErrorCause::Backend(e)))?;
+                Ok(())
+            })
+        }))
+        .runtime(Runtime::Tokio1)
+        .build()
+        .expect("Failed to create database connection pool");
         DB { connection_pool: pool }
     }
 
@@ -56,7 +84,7 @@ impl DB {
             .try_get("id")?;
 
         let stmt = transaction
-            .prepare("INSERT INTO share (block_id, miner, share) VALUES ($1, $2, $3)")
+            .prepare_cached("INSERT INTO share (block_id, miner, share) VALUES ($1, $2, $3)")
             .await?;
         for (address, share) in shares {
             transaction
@@ -77,7 +105,7 @@ impl DB {
         }
         let last_id: i32 = row.first().unwrap().get("id");
         let stmt = conn
-            .prepare("SELECT * FROM block WHERE id <= $1 AND id > $2 ORDER BY id DESC")
+            .prepare_cached("SELECT * FROM block WHERE id <= $1 AND id > $2 ORDER BY id DESC")
             .await?;
         let rows = conn
             .query(&stmt, &[&last_id, &(last_id - page as i32 * limit as i32)])
@@ -99,7 +127,7 @@ impl DB {
         let mut conn = self.connection_pool.get().await?;
         let transaction = conn.transaction().await?;
         let stmt = transaction
-            .prepare("UPDATE block SET is_canonical = $1 WHERE block_hash = $2")
+            .prepare_cached("UPDATE block SET is_canonical = $1 WHERE block_hash = $2")
             .await?;
         transaction.query(&stmt, &[&is_canonical, &block_hash]).await?;
         transaction.commit().await?;
@@ -108,7 +136,9 @@ impl DB {
 
     pub async fn get_block_shares(&self, id: Vec<i32>) -> Result<HashMap<i32, HashMap<String, i64>>> {
         let conn = self.connection_pool.get().await?;
-        let stmt = conn.prepare("SELECT * FROM share WHERE block_id = ANY($1)").await?;
+        let stmt = conn
+            .prepare_cached("SELECT * FROM share WHERE block_id = ANY($1)")
+            .await?;
 
         let res = conn.query(&stmt, &[&id]).await?;
         let mut shares = HashMap::new();
@@ -119,5 +149,47 @@ impl DB {
             shares.entry(block_id).or_insert_with(HashMap::new).insert(miner, share);
         }
         Ok(shares)
+    }
+
+    pub async fn get_should_pay_blocks(&self, latest_height: u32) -> Result<Vec<(i32, u32, String, bool, i64)>> {
+        let conn = self.connection_pool.get().await?;
+        let stmt = conn
+            .prepare_cached(
+                "SELECT * FROM block WHERE height <= $1 AND paid = false AND checked = false ORDER BY height",
+            )
+            .await?;
+        // leave 4 more blocks for possible reorg
+        // TODO: might not need this anymore on testnet3
+        let rows = conn
+            .query(&stmt, &[&((latest_height as i64).saturating_sub(4100))])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let id: i32 = row.get("id");
+                let height: i64 = row.get("height");
+                let block_hash: String = row.get("block_hash");
+                let reward: i64 = row.get("reward");
+                let is_canonical: bool = row.get("is_canonical");
+                (id, height as u32, block_hash, is_canonical, reward)
+            })
+            .collect())
+    }
+
+    pub async fn set_checked_blocks(&self, latest_height: u32) -> Result<()> {
+        let conn = self.connection_pool.get().await?;
+        let stmt = conn
+            .prepare_cached("UPDATE block SET checked = true WHERE height <= $1 AND checked = false")
+            .await?;
+        conn.query(&stmt, &[&((latest_height as i64).saturating_sub(4100))])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn pay_block(&self, block_id: i32) -> Result<()> {
+        let conn = self.connection_pool.get().await?;
+        let stmt = conn.prepare("CALL pay_block($1)").await?;
+        conn.query(&stmt, &[&block_id]).await?;
+        Ok(())
     }
 }
