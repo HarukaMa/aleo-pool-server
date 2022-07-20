@@ -26,7 +26,7 @@ Undergoing a lot of rewrite:
 - ~~Use a real stratum protocol for pool - miner communication~~
 - ~~Rework the difficulty targeting system~~
 - Decide if more API endpoints are needed -- many of the work should be offloaded to frontends
-- Payout system step 1 - allocate rewards to provers after confirmation
+- ~~Payout system step 1 - allocate rewards to provers after confirmation~~
 - Payout system step 2 - send rewards to provers (indefinitely delayed until the network is ready)
 
 ### Things to test
@@ -39,6 +39,15 @@ Undergoing a lot of rewrite:
 ## Usage
 
 Don't use unless you know what you're doing for now.
+
+### System requirements
+
+- Rust 1.59+ (Not sure what's strictly required)
+
+Optional:
+
+- PostgreSQL 11+ (Still not sure what's strictly required)
+- PL/Python 3.6+
 
 ## License
 
