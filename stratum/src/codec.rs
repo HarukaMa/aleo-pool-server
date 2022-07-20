@@ -16,7 +16,7 @@ pub struct StratumCodec {
 impl Default for StratumCodec {
     fn default() -> Self {
         Self {
-            // Notify is ~400 bytes and submitt is about ~1750 bytes. 4096 should be enough for all messages.
+            // Notify is ~400 bytes and submit is ~1750 bytes. 4096 should be enough for all messages.
             codec: AnyDelimiterCodec::new_with_max_length(vec![b'\n'], vec![b'\n'], 4096),
         }
     }
@@ -162,6 +162,29 @@ impl Encoder<StratumMessage> for StratumCodec {
     }
 }
 
+fn unwrap_str_value(value: &Value) -> Result<String, io::Error> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Param is not str")),
+    }
+}
+
+fn unwrap_bool_value(value: &Value) -> Result<bool, io::Error> {
+    match value {
+        Value::Bool(b) => Ok(*b),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Param is not bool")),
+    }
+}
+
+fn unwrap_u64_value(value: &Value) -> Result<u64, io::Error> {
+    match value {
+        Value::Number(n) => Ok(n
+            .as_u64()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Param is not u64"))?),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Param is not u64")),
+    }
+}
+
 impl Decoder for StratumCodec {
     type Error = io::Error;
     type Item = StratumMessage;
@@ -186,14 +209,17 @@ impl Decoder for StratumCodec {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let id = request.id;
             let method = request.method.as_str();
-            let params = request.params.unwrap_or_default();
+            let params = match request.params {
+                Some(params) => params,
+                None => return Err(io::Error::new(io::ErrorKind::InvalidData, "No params")),
+            };
             match method {
                 "mining.subscribe" => {
                     if params.len() != 3 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
-                    let user_agent = params[0].as_str().unwrap_or_default();
-                    let protocol_version = params[1].as_str().unwrap_or_default();
+                    let user_agent = unwrap_str_value(&params[0])?;
+                    let protocol_version = unwrap_str_value(&params[1])?;
                     let session_id = match &params[2] {
                         Value::String(s) => Some(s),
                         Value::Null => None,
@@ -201,8 +227,8 @@ impl Decoder for StratumCodec {
                     };
                     StratumMessage::Subscribe(
                         id.unwrap_or(Id::Num(0)),
-                        user_agent.to_string(),
-                        protocol_version.to_string(),
+                        user_agent,
+                        protocol_version,
                         session_id.cloned(),
                     )
                 }
@@ -210,39 +236,35 @@ impl Decoder for StratumCodec {
                     if params.len() != 2 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
-                    let worker_name = params[0].as_str().unwrap_or_default();
-                    let worker_password = params[1].as_str().unwrap_or_default();
-                    StratumMessage::Authorize(
-                        id.unwrap_or(Id::Num(0)),
-                        worker_name.to_string(),
-                        worker_password.to_string(),
-                    )
+                    let worker_name = unwrap_str_value(&params[0])?;
+                    let worker_password = unwrap_str_value(&params[1])?;
+                    StratumMessage::Authorize(id.unwrap_or(Id::Num(0)), worker_name, worker_password)
                 }
                 "mining.set_target" => {
                     if params.len() != 1 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
-                    let difficulty_target = params[0].as_u64().unwrap_or_default();
+                    let difficulty_target = unwrap_u64_value(&params[0])?;
                     StratumMessage::SetTarget(difficulty_target)
                 }
                 "mining.notify" => {
                     if params.len() != 7 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
-                    let job_id = params[0].as_str().unwrap_or_default();
-                    let block_header_root = params[1].as_str().unwrap_or_default();
-                    let hashed_leaves_1 = params[2].as_str().unwrap_or_default();
-                    let hashed_leaves_2 = params[3].as_str().unwrap_or_default();
-                    let hashed_leaves_3 = params[4].as_str().unwrap_or_default();
-                    let hashed_leaves_4 = params[5].as_str().unwrap_or_default();
-                    let clean_jobs = params[6].as_bool().unwrap_or(true);
+                    let job_id = unwrap_str_value(&params[0])?;
+                    let block_header_root = unwrap_str_value(&params[1])?;
+                    let hashed_leaves_1 = unwrap_str_value(&params[2])?;
+                    let hashed_leaves_2 = unwrap_str_value(&params[3])?;
+                    let hashed_leaves_3 = unwrap_str_value(&params[4])?;
+                    let hashed_leaves_4 = unwrap_str_value(&params[5])?;
+                    let clean_jobs = unwrap_bool_value(&params[6])?;
                     StratumMessage::Notify(
-                        job_id.to_string(),
-                        block_header_root.to_string(),
-                        hashed_leaves_1.to_string(),
-                        hashed_leaves_2.to_string(),
-                        hashed_leaves_3.to_string(),
-                        hashed_leaves_4.to_string(),
+                        job_id,
+                        block_header_root,
+                        hashed_leaves_1,
+                        hashed_leaves_2,
+                        hashed_leaves_3,
+                        hashed_leaves_4,
                         clean_jobs,
                     )
                 }
@@ -250,17 +272,11 @@ impl Decoder for StratumCodec {
                     if params.len() != 4 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
-                    let worker_name = params[0].as_str().unwrap_or_default();
-                    let job_id = params[1].as_str().unwrap_or_default();
-                    let nonce = params[2].as_str().unwrap_or_default();
-                    let proof = params[3].as_str().unwrap_or_default();
-                    StratumMessage::Submit(
-                        id.unwrap_or(Id::Num(0)),
-                        worker_name.to_string(),
-                        job_id.to_string(),
-                        nonce.to_string(),
-                        proof.to_string(),
-                    )
+                    let worker_name = unwrap_str_value(&params[0])?;
+                    let job_id = unwrap_str_value(&params[1])?;
+                    let nonce = unwrap_str_value(&params[2])?;
+                    let proof = unwrap_str_value(&params[3])?;
+                    StratumMessage::Submit(id.unwrap_or(Id::Num(0)), worker_name, job_id, nonce, proof)
                 }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown method"));
