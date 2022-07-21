@@ -375,6 +375,7 @@ impl Accounting {
                 Ok(height) => height,
                 Err(e) => {
                     error!("Unable to get latest block height: {}", e);
+                    sleep(PAY_INTERVAL).await;
                     continue;
                 }
             };
