@@ -269,6 +269,7 @@ impl Accounting {
             .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32)
     }
 
+    #[cfg(feature = "db")]
     async fn update_block_canonical(
         &self,
         height: u32,
