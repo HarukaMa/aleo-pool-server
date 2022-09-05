@@ -28,6 +28,7 @@ use tokio::{
     task,
 };
 use tracing::{debug, error, info, trace, warn};
+use flurry::HashSet as FlurryHashSet;
 
 use crate::{connection::Connection, operator_peer::OperatorMessage, AccountingMessage};
 
@@ -41,7 +42,6 @@ struct ProverState {
     speed_1h: Speedometer,
     current_difficulty: u64,
     next_difficulty: u64,
-    nonce_seen: HashSet<<Testnet2 as Network>::PoSWNonce>,
 }
 
 impl ProverState {
@@ -56,7 +56,6 @@ impl ProverState {
             speed_1h: Speedometer::init_with_cache(Duration::from_secs(60 * 60), Duration::from_secs(30)),
             current_difficulty: 1,
             next_difficulty: 1,
-            nonce_seen: HashSet::new(),
         }
     }
 
@@ -78,10 +77,6 @@ impl ProverState {
 
     pub fn current_difficulty(&self) -> u64 {
         self.current_difficulty
-    }
-
-    pub fn seen_nonce(&mut self, nonce: <Testnet2 as Network>::PoSWNonce) -> bool {
-        !self.nonce_seen.insert(nonce)
     }
 
     pub fn address(&self) -> Address<Testnet2> {
@@ -216,6 +211,7 @@ pub struct Server {
     latest_block_height: AtomicU32,
     latest_block_template: Arc<RwLock<Option<BlockTemplate<Testnet2>>>>,
     latest_block_template_header_tree: Arc<RwLock<Option<BlockHeaderTree>>>,
+    nonce_seen: Arc<FlurryHashSet<String>>,
 }
 
 impl Server {
@@ -249,7 +245,20 @@ impl Server {
             latest_block_height: AtomicU32::new(0),
             latest_block_template: Default::default(),
             latest_block_template_header_tree: Default::default(),
+            nonce_seen: Arc::new(FlurryHashSet::with_capacity(10 << 20)),
         });
+
+        // clear nonce
+        {
+            let nonce = server.nonce_seen.clone();
+            let mut ticker = tokio::time::interval(Duration::from_secs(60));
+            task::spawn(async move {
+                loop {
+                    ticker.tick().await;
+                    nonce.pin().clear()
+                }
+            });
+        }
 
         let s = server.clone();
         task::spawn(async move {
@@ -280,6 +289,10 @@ impl Server {
         });
 
         server
+    }
+
+    fn seen_nonce(nonce_seen: Arc<FlurryHashSet<String>>, nonce: String) -> bool {
+        !nonce_seen.pin().insert(nonce)
     }
 
     pub fn sender(&self) -> Sender<ServerMessage> {
@@ -432,6 +445,8 @@ impl Server {
                 let latest_block_template = self.latest_block_template.clone();
                 let accounting_sender = self.accounting_sender.clone();
                 let operator_sender = self.operator_sender.clone();
+                let seen_nonce = self.nonce_seen.clone();
+                let nonce_s = nonce.to_string();
                 task::spawn(async move {
                     async fn send_result(
                         sender: &Sender<StratumMessage>,
@@ -478,7 +493,7 @@ impl Server {
                                 Some(ErrorCode::from_code(24)),
                                 Some("Unknown prover".to_string()),
                             )
-                            .await;
+                                .await;
                             return;
                         }
                     };
@@ -497,7 +512,7 @@ impl Server {
                                 Some(ErrorCode::from_code(21)),
                                 Some("No block template".to_string()),
                             )
-                            .await;
+                                .await;
                             return;
                         }
                     };
@@ -513,10 +528,10 @@ impl Server {
                             Some(ErrorCode::from_code(21)),
                             Some("Stale proof".to_string()),
                         )
-                        .await;
+                            .await;
                         return;
                     }
-                    if prover_state.write().await.seen_nonce(nonce) {
+                    if Self::seen_nonce(seen_nonce, nonce_s) {
                         warn!("Received duplicate nonce from prover {}", prover_display);
                         send_result(
                             sender,
@@ -525,7 +540,7 @@ impl Server {
                             Some(ErrorCode::from_code(22)),
                             Some("Duplicate nonce".to_string()),
                         )
-                        .await;
+                            .await;
                         return;
                     }
                     let difficulty = (prover_state.read().await.current_difficulty() as f64
@@ -542,7 +557,7 @@ impl Server {
                                 Some(ErrorCode::from_code(23)),
                                 Some("No difficulty".to_string()),
                             )
-                            .await;
+                                .await;
                             return;
                         }
                     };
@@ -558,7 +573,7 @@ impl Server {
                             Some(ErrorCode::from_code(23)),
                             Some("Difficulty target not met".to_string()),
                         )
-                        .await;
+                            .await;
                         return;
                     }
                     if !Testnet2::posw().verify(
@@ -575,7 +590,7 @@ impl Server {
                             Some(ErrorCode::from_code(26)),
                             Some("Invalid proof".to_string()),
                         )
-                        .await;
+                            .await;
                         return;
                     }
                     prover_state.write().await.add_share(difficulty).await;

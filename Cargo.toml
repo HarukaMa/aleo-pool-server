@@ -42,6 +42,7 @@ hex = "0.4.3"
 rayon = "1.5.3"
 num_cpus = "1.13.1"
 erased-serde = "0.3.21"
+flurry = "0.4.0"
 
 [dependencies.speedometer]
 path = "./speedometer"
@@ -98,6 +99,8 @@ features = ["futures-v0_3"]
 [dependencies.clap]
 version = "3.2.13"
 features = ["derive"]
+
+
 
 [profile.dev]
 opt-level = 1
