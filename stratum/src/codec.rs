@@ -73,7 +73,8 @@ impl<'de> Deserialize<'de> for ResponseParams {
             Value::Bool(b) => Ok(ResponseParams::Bool(b)),
             Value::Array(a) => {
                 let mut vec: Vec<Box<dyn BoxedType>> = Vec::new();
-                let _ = a.iter().map(|v| match v {
+                a.iter().for_each(|v| match v {
+                    Value::Null => vec.push(Box::new(None::<String>)),
                     Value::String(s) => vec.push(Box::new(s.clone())),
                     Value::Number(n) => vec.push(Box::new(n.as_u64())),
                     _ => {}
@@ -242,7 +243,7 @@ impl Decoder for StratumCodec {
                     StratumMessage::SetTarget(difficulty_target)
                 }
                 "mining.notify" => {
-                    if params.len() != 7 {
+                    if params.len() != 4 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
                     let job_id = unwrap_str_value(&params[0])?;
@@ -256,7 +257,7 @@ impl Decoder for StratumCodec {
                     StratumMessage::Notify(job_id, epoch_challenge, address.cloned(), clean_jobs)
                 }
                 "mining.submit" => {
-                    if params.len() != 4 {
+                    if params.len() != 5 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
                     let worker_name = unwrap_str_value(&params[0])?;
