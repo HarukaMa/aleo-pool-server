@@ -131,7 +131,7 @@ impl Connection {
                                     warn!("Failed to decode job_id {} from peer {:?}", job_id, peer_addr);
                                     break;
                                 }
-                                if job_bytes.clone().unwrap().len() != 4 {
+                                if job_bytes.clone().unwrap().len() != 8 {
                                     warn!("Invalid job_id {} from peer {:?}", job_id, peer_addr);
                                     break;
                                 }
