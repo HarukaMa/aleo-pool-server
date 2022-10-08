@@ -5,11 +5,10 @@ use std::{
 };
 
 use aleo_stratum::{
-    codec::{ResponseParams, StratumCodec},
+    codec::{BoxedType, ResponseParams, StratumCodec},
     message::StratumMessage,
 };
 use anyhow::{anyhow, Result};
-use erased_serde::Serialize as ErasedSerialize;
 use futures_util::SinkExt;
 use semver::Version;
 use snarkvm::{
@@ -39,8 +38,8 @@ pub struct Connection {
 static PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 static PEER_COMM_TIMEOUT: Duration = Duration::from_secs(120);
 
-static MIN_SUPPORTED_VERSION: Version = Version::new(1, 0, 0);
-static MAX_SUPPORTED_VERSION: Version = Version::new(1, 0, 0);
+static MIN_SUPPORTED_VERSION: Version = Version::new(2, 0, 0);
+static MAX_SUPPORTED_VERSION: Version = Version::new(2, 0, 0);
 
 impl Connection {
     pub async fn init(
@@ -226,10 +225,11 @@ impl Connection {
                             warn!("Unsupported protocol version {} from peer {:?}", version, peer_addr);
                             return Err(anyhow!("Unsupported protocol version"));
                         }
-                        let mut response_params: Vec<Box<dyn ErasedSerialize + Send + Sync>> = Vec::with_capacity(2);
-                        response_params.push(Box::new(Option::<String>::None));
-                        response_params.push(Box::new(Option::<String>::None));
-                        response_params.push(Box::new(Some(pool_address)));
+                        let response_params: Vec<Box<dyn BoxedType>> = vec![
+                            Box::new(Option::<String>::None),
+                            Box::new(Option::<String>::None),
+                            Box::new(Some(pool_address)),
+                        ];
                         framed
                             .send(StratumMessage::Response(
                                 id,

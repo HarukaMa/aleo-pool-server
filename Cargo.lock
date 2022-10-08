@@ -43,7 +43,6 @@ dependencies = [
  "deadpool-postgres",
  "dirs",
  "dotenv",
- "erased-serde",
  "flurry",
  "futures",
  "futures-util",

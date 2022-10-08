@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::{Display, Formatter},
     net::SocketAddr,
-    str::FromStr,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -177,10 +176,10 @@ impl CoinbasePuzzleData {
         let max_degree = 1 << 15;
         let max_config = PuzzleConfig { degree: max_degree };
         let universal_srs = CoinbasePuzzle::<Testnet3>::setup(max_config, rng).unwrap();
-        return Self {
+        Self {
             srs: universal_srs,
             vks: HashMap::new(),
-        };
+        }
     }
 
     pub fn init_vk(&mut self, degree: u32) {
@@ -197,6 +196,7 @@ impl CoinbasePuzzleData {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub enum ServerMessage {
     ProverConnected(TcpStream, SocketAddr),
     ProverAuthenticated(SocketAddr, Address<Testnet3>, Sender<StratumMessage>),
@@ -252,7 +252,7 @@ pub struct Server {
 impl Server {
     pub async fn init(
         port: u16,
-        address: String,
+        address: Address<Testnet3>,
         operator_sender: (),
         accounting_sender: Sender<AccountingMessage>,
     ) -> Arc<Server> {
@@ -277,7 +277,7 @@ impl Server {
             sender,
             operator_sender,
             accounting_sender,
-            pool_address: Address::from_str(&address).expect("Invalid pool address"),
+            pool_address: address,
             connected_provers: Default::default(),
             authenticated_provers: Default::default(),
             pool_state: Arc::new(RwLock::new(PoolState::new())),
@@ -328,6 +328,18 @@ impl Server {
                     server.process_message(msg).await;
                 });
             }
+        });
+
+        let ss = server.clone();
+        task::spawn(async move {
+            ss.sender
+                .send(ServerMessage::NewEpochChallenge(
+                    EpochChallenge::new(0, Default::default(), (1 << 13) - 1).unwrap(),
+                    1 << 11,
+                    1 << 1,
+                ))
+                .await
+                .expect("Could not send fake epoch challenge");
         });
 
         server

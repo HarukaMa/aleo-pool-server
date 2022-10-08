@@ -29,9 +29,30 @@ struct NotifyParams(String, String, Option<String>, bool);
 #[derive(Serialize, Deserialize)]
 struct SubscribeParams(String, String, Option<String>);
 
+pub trait BoxedType: ErasedSerialize + Send + Sync {
+    fn as_any(self: Box<Self>) -> Box<dyn std::any::Any>;
+}
+
+impl<T: ErasedSerialize + Send + Sync + 'static> BoxedType for T {
+    fn as_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+}
+
+impl Serialize for dyn BoxedType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(1))?;
+        seq.serialize_element(self)?;
+        seq.end()
+    }
+}
+
 pub enum ResponseParams {
     Bool(bool),
-    Array(Vec<Box<dyn ErasedSerialize + Send + Sync>>),
+    Array(Vec<Box<dyn BoxedType>>),
     Null,
 }
 
@@ -63,7 +84,7 @@ impl<'de> Deserialize<'de> for ResponseParams {
         match value {
             Value::Bool(b) => Ok(ResponseParams::Bool(b)),
             Value::Array(a) => {
-                let mut vec: Vec<Box<dyn ErasedSerialize + Send + Sync>> = Vec::new();
+                let mut vec: Vec<Box<dyn BoxedType>> = Vec::new();
                 let _ = a.iter().map(|v| match v {
                     Value::String(s) => vec.push(Box::new(s.clone())),
                     Value::Number(n) => vec.push(Box::new(n.as_u64())),

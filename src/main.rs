@@ -14,6 +14,7 @@ use clap::Parser;
 use futures::stream::StreamExt;
 use signal_hook::consts::{SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGUSR1};
 use signal_hook_tokio::Signals;
+use snarkvm::{console::account::address::Address, prelude::Testnet3};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 use tracing_log::{log, LogTracer};
@@ -34,7 +35,7 @@ struct Opt {
 
     /// Mining pool address
     #[clap(short, long)]
-    address: String,
+    address: Address<Testnet3>,
 
     /// Port to listen for incoming provers
     #[clap(short, long)]
