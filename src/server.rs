@@ -2,22 +2,27 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::{Display, Formatter},
     net::SocketAddr,
+    str::FromStr,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
 
 use aleo_stratum::{codec::ResponseParams, message::StratumMessage};
+use flurry::HashSet as FlurryHashSet;
 use json_rpc_types::{Error, ErrorCode, Id};
-use snarkos::environment::network::Data;
+use rand::thread_rng;
 use snarkvm::{
-    dpc::{testnet2::Testnet2, Address, BlockTemplate, PoSWProof, PoSWScheme},
-    traits::Network,
-    utilities::{to_bytes_le, ToBytes},
+    compiler::{hash_commitment, CoinbasePuzzle, CoinbaseVerifyingKey, EpochChallenge, PuzzleConfig},
+    console::account::address::Address,
+    prelude::{Environment, Testnet3, ToBytes},
 };
-use snarkvm_algorithms::{merkle_tree::MerkleTree, traits::crh::CRH};
+use snarkvm_algorithms::{
+    crypto_hash::sha256d_to_u64,
+    polycommit::kzg10::{KZGCommitment, KZGProof, UniversalParams, KZG10},
+};
 use speedometer::Speedometer;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -28,13 +33,12 @@ use tokio::{
     task,
 };
 use tracing::{debug, error, info, trace, warn};
-use flurry::HashSet as FlurryHashSet;
 
-use crate::{connection::Connection, operator_peer::OperatorMessage, AccountingMessage};
+use crate::{connection::Connection, AccountingMessage};
 
 struct ProverState {
     peer_addr: SocketAddr,
-    address: Address<Testnet2>,
+    address: Address<Testnet3>,
     speed_2m: Speedometer,
     speed_5m: Speedometer,
     speed_15m: Speedometer,
@@ -45,7 +49,7 @@ struct ProverState {
 }
 
 impl ProverState {
-    pub fn new(peer_addr: SocketAddr, address: Address<Testnet2>) -> Self {
+    pub fn new(peer_addr: SocketAddr, address: Address<Testnet3>) -> Self {
         Self {
             peer_addr,
             address,
@@ -79,7 +83,7 @@ impl ProverState {
         self.current_difficulty
     }
 
-    pub fn address(&self) -> Address<Testnet2> {
+    pub fn address(&self) -> Address<Testnet3> {
         self.address
     }
 
@@ -162,19 +166,50 @@ impl PoolState {
     }
 }
 
+struct CoinbasePuzzleData {
+    srs: UniversalParams<<Testnet3 as Environment>::PairingCurve>,
+    vks: HashMap<u32, CoinbaseVerifyingKey<Testnet3>>,
+}
+
+impl CoinbasePuzzleData {
+    pub fn new() -> Self {
+        let rng = &mut thread_rng();
+        let max_degree = 1 << 15;
+        let max_config = PuzzleConfig { degree: max_degree };
+        let universal_srs = CoinbasePuzzle::<Testnet3>::setup(max_config, rng).unwrap();
+        return Self {
+            srs: universal_srs,
+            vks: HashMap::new(),
+        };
+    }
+
+    pub fn init_vk(&mut self, degree: u32) {
+        info!("Generating new coinbase verifying key for degree {}", degree);
+        let config = PuzzleConfig { degree };
+        let vk = CoinbasePuzzle::<Testnet3>::trim(&self.srs, config).unwrap();
+        self.vks.insert(degree, vk.1);
+        info!("Done generating new coinbase verifying key for degree {}", degree);
+    }
+
+    pub fn get_vk(&self, degree: u32) -> &CoinbaseVerifyingKey<Testnet3> {
+        self.vks.get(&degree).unwrap()
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     ProverConnected(TcpStream, SocketAddr),
-    ProverAuthenticated(SocketAddr, Address<Testnet2>, Sender<StratumMessage>),
+    ProverAuthenticated(SocketAddr, Address<Testnet3>, Sender<StratumMessage>),
     ProverDisconnected(SocketAddr),
     ProverSubmit(
         Id,
         SocketAddr,
-        u32,
-        <Testnet2 as Network>::PoSWNonce,
-        PoSWProof<Testnet2>,
+        u64,
+        u64,
+        KZGCommitment<<Testnet3 as Environment>::PairingCurve>,
+        KZGProof<<Testnet3 as Environment>::PairingCurve>,
     ),
-    NewBlockTemplate(BlockTemplate<Testnet2>),
+    NewEpochChallenge(EpochChallenge<Testnet3>, u64, u64),
     Exit,
 }
 
@@ -185,7 +220,7 @@ impl ServerMessage {
             ServerMessage::ProverAuthenticated(..) => "ProverAuthenticated",
             ServerMessage::ProverDisconnected(..) => "ProverDisconnected",
             ServerMessage::ProverSubmit(..) => "ProverSubmit",
-            ServerMessage::NewBlockTemplate(..) => "NewBlockTemplate",
+            ServerMessage::NewEpochChallenge(..) => "NewEpochChallenge",
             ServerMessage::Exit => "Exit",
         }
     }
@@ -197,27 +232,28 @@ impl Display for ServerMessage {
     }
 }
 
-type BlockHeaderTree = MerkleTree<<Testnet2 as Network>::BlockHeaderRootParameters>;
-
 pub struct Server {
     sender: Sender<ServerMessage>,
-    operator_sender: Sender<OperatorMessage>,
+    operator_sender: (),
     accounting_sender: Sender<AccountingMessage>,
+    pool_address: Address<Testnet3>,
     connected_provers: RwLock<HashSet<SocketAddr>>,
     authenticated_provers: Arc<RwLock<HashMap<SocketAddr, Sender<StratumMessage>>>>,
     pool_state: Arc<RwLock<PoolState>>,
     prover_states: Arc<RwLock<HashMap<SocketAddr, RwLock<ProverState>>>>,
-    prover_address_connections: Arc<RwLock<HashMap<Address<Testnet2>, HashSet<SocketAddr>>>>,
-    latest_block_height: AtomicU32,
-    latest_block_template: Arc<RwLock<Option<BlockTemplate<Testnet2>>>>,
-    latest_block_template_header_tree: Arc<RwLock<Option<BlockHeaderTree>>>,
-    nonce_seen: Arc<FlurryHashSet<String>>,
+    prover_address_connections: Arc<RwLock<HashMap<Address<Testnet3>, HashSet<SocketAddr>>>>,
+    coinbase_puzzle_data: Arc<RwLock<CoinbasePuzzleData>>,
+    latest_epoch_number: AtomicU64,
+    latest_epoch_challenge: Arc<RwLock<Option<EpochChallenge<Testnet3>>>>,
+    latest_proof_target: AtomicU64,
+    nonce_seen: Arc<FlurryHashSet<u64>>,
 }
 
 impl Server {
     pub async fn init(
         port: u16,
-        operator_sender: Sender<OperatorMessage>,
+        address: String,
+        operator_sender: (),
         accounting_sender: Sender<AccountingMessage>,
     ) -> Arc<Server> {
         let (sender, mut receiver) = channel(1024);
@@ -233,18 +269,24 @@ impl Server {
             }
         };
 
+        info!("Initializing coinbase puzzle data");
+        let coinbase_puzzle_data = CoinbasePuzzleData::new();
+        info!("Coinbase puzzle data initialized");
+
         let server = Arc::new(Server {
             sender,
             operator_sender,
             accounting_sender,
+            pool_address: Address::from_str(&address).expect("Invalid pool address"),
             connected_provers: Default::default(),
             authenticated_provers: Default::default(),
             pool_state: Arc::new(RwLock::new(PoolState::new())),
             prover_states: Default::default(),
             prover_address_connections: Default::default(),
-            latest_block_height: AtomicU32::new(0),
-            latest_block_template: Default::default(),
-            latest_block_template_header_tree: Default::default(),
+            coinbase_puzzle_data: Arc::new(RwLock::new(coinbase_puzzle_data)),
+            latest_epoch_number: AtomicU64::new(0),
+            latest_epoch_challenge: Default::default(),
+            latest_proof_target: AtomicU64::new(0),
             nonce_seen: Arc::new(FlurryHashSet::with_capacity(10 << 20)),
         });
 
@@ -291,7 +333,7 @@ impl Server {
         server
     }
 
-    fn seen_nonce(nonce_seen: Arc<FlurryHashSet<String>>, nonce: String) -> bool {
+    fn seen_nonce(nonce_seen: Arc<FlurryHashSet<u64>>, nonce: u64) -> bool {
         !nonce_seen.pin().insert(nonce)
     }
 
@@ -304,7 +346,7 @@ impl Server {
         match msg {
             ServerMessage::ProverConnected(stream, peer_addr) => {
                 self.connected_provers.write().await.insert(peer_addr);
-                Connection::init(stream, peer_addr, self.sender.clone()).await;
+                Connection::init(stream, peer_addr, self.sender.clone(), self.pool_address).await;
             }
             ServerMessage::ProverAuthenticated(peer_addr, address, sender) => {
                 self.authenticated_provers
@@ -325,24 +367,19 @@ impl Server {
                 if let Err(e) = sender.send(StratumMessage::SetTarget(u64::MAX)).await {
                     error!("Error sending initial target to prover: {}", e);
                 }
-                if let Some(header_tree) = self.latest_block_template_header_tree.read().await.as_ref() {
-                    let header_root = header_tree.root();
-                    let hashed_leaves = header_tree.hashed_leaves();
-                    let job_id = hex::encode(self.latest_block_height.load(Ordering::SeqCst).to_le_bytes());
+                if let Some(epoch_challenge) = self.latest_epoch_challenge.read().await.as_ref() {
+                    let job_id = hex::encode(self.latest_epoch_number.load(Ordering::SeqCst).to_le_bytes());
                     if let Err(e) = sender
                         .send(StratumMessage::Notify(
                             job_id,
-                            hex::encode(header_root.to_bytes_le().unwrap()),
-                            hex::encode(hashed_leaves[0].to_bytes_le().unwrap()),
-                            hex::encode(hashed_leaves[1].to_bytes_le().unwrap()),
-                            hex::encode(hashed_leaves[2].to_bytes_le().unwrap()),
-                            hex::encode(hashed_leaves[3].to_bytes_le().unwrap()),
+                            hex::encode(epoch_challenge.to_bytes_le().unwrap()),
+                            None,
                             true,
                         ))
                         .await
                     {
                         error!(
-                            "Error sending initial block template to prover {} ({}): {}",
+                            "Error sending initial epoch challenge to prover {} ({}): {}",
                             peer_addr, address, e
                         );
                     }
@@ -367,38 +404,31 @@ impl Server {
                 self.connected_provers.write().await.remove(&peer_addr);
                 self.authenticated_provers.write().await.remove(&peer_addr);
             }
-            ServerMessage::NewBlockTemplate(block_template) => {
-                info!("New block template: {}", block_template.block_height());
-                self.latest_block_height
-                    .store(block_template.block_height(), Ordering::SeqCst);
-                self.latest_block_template.write().await.replace(block_template.clone());
-                let header_tree = block_template
-                    .to_header_tree()
-                    .expect("Could not create header tree from block template");
-                self.latest_block_template_header_tree
+            ServerMessage::NewEpochChallenge(epoch_challenge, coinbase_target, proof_target) => {
+                info!("New epoch challenge: {}", epoch_challenge.epoch_number());
+                // pre-generate coinbase verifying key
+                self.coinbase_puzzle_data
                     .write()
                     .await
-                    .replace(header_tree);
+                    .init_vk(epoch_challenge.degree().unwrap());
+                self.latest_epoch_number
+                    .store(epoch_challenge.epoch_number(), Ordering::SeqCst);
+                self.latest_epoch_challenge
+                    .write()
+                    .await
+                    .replace(epoch_challenge.clone());
+                self.latest_proof_target.store(proof_target, Ordering::SeqCst);
                 if let Err(e) = self
                     .accounting_sender
-                    .send(AccountingMessage::SetN(
-                        u64::MAX / block_template.difficulty_target() * 5,
-                    ))
+                    .send(AccountingMessage::SetN(coinbase_target * 5))
                     .await
                 {
                     error!("Error sending accounting message: {}", e);
                 }
                 let global_difficulty_modifier = self.pool_state.write().await.next_global_difficulty_modifier().await;
                 debug!("Global difficulty modifier: {}", global_difficulty_modifier);
-                let header_tree = block_template.to_header_tree().unwrap();
-                let header_root = header_tree.root();
-                let hashed_leaves = header_tree.hashed_leaves();
-                let job_id = hex::encode(block_template.block_height().to_le_bytes());
-                let header_root_hex = hex::encode(header_root.to_bytes_le().unwrap());
-                let hashed_leaf_0 = hex::encode(hashed_leaves[0].to_bytes_le().unwrap());
-                let hashed_leaf_1 = hex::encode(hashed_leaves[1].to_bytes_le().unwrap());
-                let hashed_leaf_2 = hex::encode(hashed_leaves[2].to_bytes_le().unwrap());
-                let hashed_leaf_3 = hex::encode(hashed_leaves[3].to_bytes_le().unwrap());
+                let job_id = hex::encode(epoch_challenge.epoch_number().to_le_bytes());
+                let epoch_challenge_hex = hex::encode(epoch_challenge.to_bytes_le().unwrap());
                 for (peer_addr, sender) in self.authenticated_provers.read().await.clone().iter() {
                     let states = self.prover_states.read().await;
                     let prover_state = match states.get(peer_addr) {
@@ -411,22 +441,22 @@ impl Server {
 
                     let prover_display = format!("{}", prover_state.read().await);
                     let current_difficulty = prover_state.read().await.current_difficulty();
-                    let next_difficulty =
+                    let mut next_difficulty =
                         (prover_state.write().await.next_difficulty().await as f64 * global_difficulty_modifier) as u64;
                     drop(states);
+                    if next_difficulty > proof_target {
+                        next_difficulty = proof_target;
+                    }
                     if current_difficulty != next_difficulty {
-                        if let Err(e) = sender.send(StratumMessage::SetTarget(u64::MAX / next_difficulty)).await {
+                        if let Err(e) = sender.send(StratumMessage::SetTarget(next_difficulty)).await {
                             error!("Error sending difficulty target to prover {}: {}", prover_display, e);
                         }
                     }
                     if let Err(e) = sender
                         .send(StratumMessage::Notify(
                             job_id.clone(),
-                            header_root_hex.clone(),
-                            hashed_leaf_0.clone(),
-                            hashed_leaf_1.clone(),
-                            hashed_leaf_2.clone(),
-                            hashed_leaf_3.clone(),
+                            epoch_challenge_hex.clone(),
+                            None,
                             true,
                         ))
                         .await
@@ -435,18 +465,20 @@ impl Server {
                     }
                 }
             }
-            ServerMessage::ProverSubmit(id, peer_addr, block_height, nonce, proof) => {
+            ServerMessage::ProverSubmit(id, peer_addr, epoch_number, nonce, commitment, proof) => {
                 let prover_states = self.prover_states.clone();
                 let pool_state = self.pool_state.clone();
                 let authenticated_provers = self.authenticated_provers.clone();
-                let latest_block_height = self.latest_block_height.load(Ordering::SeqCst);
+                let latest_epoch_number = self.latest_epoch_number.load(Ordering::SeqCst);
                 let current_global_difficulty_modifier =
                     self.pool_state.read().await.current_global_difficulty_modifier();
-                let latest_block_template = self.latest_block_template.clone();
+                let latest_epoch_challenge = self.latest_epoch_challenge.clone();
                 let accounting_sender = self.accounting_sender.clone();
-                let operator_sender = self.operator_sender.clone();
+                // let operator_sender = self.operator_sender.clone();
                 let seen_nonce = self.nonce_seen.clone();
-                let nonce_s = nonce.to_string();
+                let global_proof_target = self.latest_proof_target.load(Ordering::SeqCst);
+                let pool_address = self.pool_address;
+                let coinbase_puzzle_data = self.coinbase_puzzle_data.clone();
                 task::spawn(async move {
                     async fn send_result(
                         sender: &Sender<StratumMessage>,
@@ -493,16 +525,16 @@ impl Server {
                                 Some(ErrorCode::from_code(24)),
                                 Some("Unknown prover".to_string()),
                             )
-                                .await;
+                            .await;
                             return;
                         }
                     };
                     let prover_display = format!("{}", prover_state.read().await);
-                    let block_template = match latest_block_template.read().await.clone() {
+                    let epoch_challenge = match latest_epoch_challenge.read().await.clone() {
                         Some(template) => template,
                         None => {
                             warn!(
-                                "Received proof from prover {} while no block template is available",
+                                "Received proof from prover {} while no epoch challenge is available",
                                 prover_display
                             );
                             send_result(
@@ -510,16 +542,16 @@ impl Server {
                                 id,
                                 false,
                                 Some(ErrorCode::from_code(21)),
-                                Some("No block template".to_string()),
+                                Some("No epoch challenge".to_string()),
                             )
-                                .await;
+                            .await;
                             return;
                         }
                     };
-                    if block_height != latest_block_height {
+                    if epoch_number != latest_epoch_number {
                         info!(
-                            "Received stale proof from prover {} with block height: {} (expected {})",
-                            prover_display, block_height, latest_block_height
+                            "Received stale proof from prover {} with epoch number: {} (expected {})",
+                            prover_display, epoch_number, latest_epoch_number
                         );
                         send_result(
                             sender,
@@ -528,10 +560,10 @@ impl Server {
                             Some(ErrorCode::from_code(21)),
                             Some("Stale proof".to_string()),
                         )
-                            .await;
+                        .await;
                         return;
                     }
-                    if Self::seen_nonce(seen_nonce, nonce_s) {
+                    if Self::seen_nonce(seen_nonce, nonce) {
                         warn!("Received duplicate nonce from prover {}", prover_display);
                         send_result(
                             sender,
@@ -540,14 +572,16 @@ impl Server {
                             Some(ErrorCode::from_code(22)),
                             Some("Duplicate nonce".to_string()),
                         )
-                            .await;
+                        .await;
                         return;
                     }
-                    let difficulty = (prover_state.read().await.current_difficulty() as f64
+                    let mut difficulty_target = (prover_state.read().await.current_difficulty() as f64
                         * current_global_difficulty_modifier) as u64;
-                    let difficulty_target = u64::MAX / difficulty;
-                    let proof_difficulty = match proof.to_proof_difficulty() {
-                        Ok(difficulty) => difficulty,
+                    if difficulty_target > global_proof_target {
+                        difficulty_target = global_proof_target;
+                    }
+                    let proof_difficulty = match &commitment.to_bytes_le() {
+                        Ok(bytes) => u64::MAX / sha256d_to_u64(bytes),
                         Err(e) => {
                             warn!("Received invalid proof from prover {}: {}", prover_display, e);
                             send_result(
@@ -555,15 +589,15 @@ impl Server {
                                 id,
                                 false,
                                 Some(ErrorCode::from_code(23)),
-                                Some("No difficulty".to_string()),
+                                Some("Invalid proof".to_string()),
                             )
-                                .await;
+                            .await;
                             return;
                         }
                     };
-                    if proof_difficulty > difficulty_target {
+                    if proof_difficulty < difficulty_target {
                         warn!(
-                            "Received proof with difficulty {} from prover {} (expected 8{})",
+                            "Received proof with difficulty {} from prover {} (expected {})",
                             proof_difficulty, prover_display, difficulty_target
                         );
                         send_result(
@@ -573,32 +607,72 @@ impl Server {
                             Some(ErrorCode::from_code(23)),
                             Some("Difficulty target not met".to_string()),
                         )
-                            .await;
+                        .await;
                         return;
                     }
-                    if !Testnet2::posw().verify(
-                        block_height,
-                        difficulty_target,
-                        &[*block_template.to_header_root().unwrap(), *nonce],
-                        &proof,
-                    ) {
-                        warn!("Received invalid proof from prover {}", prover_display);
-                        send_result(
-                            sender,
-                            id,
-                            false,
-                            Some(ErrorCode::from_code(26)),
-                            Some("Invalid proof".to_string()),
-                        )
+                    info!("Verifying proof from prover {}", prover_display);
+                    let polynomial = match CoinbasePuzzle::prover_polynomial(&epoch_challenge, &pool_address, nonce) {
+                        Ok(polynomial) => polynomial,
+                        Err(e) => {
+                            warn!(
+                                "Failed to construct prover polynomial from prover {}: {}",
+                                prover_display, e
+                            );
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(20)),
+                                Some("Invalid polynomial".to_string()),
+                            )
                             .await;
-                        return;
+                            return;
+                        }
+                    };
+                    let point = match hash_commitment(&commitment) {
+                        Ok(point) => point,
+                        Err(e) => {
+                            warn!("Failed to hash commitment from prover {}: {}", prover_display, e);
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(20)),
+                                Some("Invalid commitment".to_string()),
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    let product_eval_at_point =
+                        polynomial.evaluate(point) * epoch_challenge.epoch_polynomial().evaluate(point);
+                    let cpd = coinbase_puzzle_data.read().await;
+                    let verifying_key = cpd.get_vk(epoch_challenge.degree().unwrap()).clone();
+                    drop(cpd);
+                    match KZG10::check(&verifying_key, &commitment, point, product_eval_at_point, &proof) {
+                        Ok(true) => {
+                            info!("Verified proof from prover {}", prover_display);
+                        }
+                        _ => {
+                            warn!("Failed to verify proof from prover {}", prover_display);
+                            send_result(
+                                sender,
+                                id,
+                                false,
+                                Some(ErrorCode::from_code(20)),
+                                Some("Invalid proof".to_string()),
+                            )
+                            .await;
+                            return;
+                        }
                     }
-                    prover_state.write().await.add_share(difficulty).await;
-                    pool_state.write().await.add_share(difficulty).await;
+
+                    prover_state.write().await.add_share(proof_difficulty).await;
+                    pool_state.write().await.add_share(proof_difficulty).await;
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
                             prover_state.read().await.address().to_string(),
-                            difficulty,
+                            proof_difficulty,
                         ))
                         .await
                     {
@@ -609,49 +683,52 @@ impl Server {
                     drop(states);
                     info!(
                         "Received valid proof from prover {} with difficulty {}",
-                        prover_display, difficulty
+                        prover_display, proof_difficulty
                     );
-                    if proof_difficulty <= block_template.difficulty_target() {
-                        info!(
-                            "Received unconfirmed block from prover {} with difficulty {} (target {})",
-                            prover_display,
-                            proof_difficulty,
-                            block_template.difficulty_target()
-                        );
-                        if let Err(e) = operator_sender
-                            .send(OperatorMessage::PoolBlock(nonce, Data::Object(proof)))
-                            .await
-                        {
-                            error!("Failed to report unconfirmed block to operator: {}", e);
-                        }
-                        let reward = block_template.coinbase_record().value();
-                        match block_template.to_header_root() {
-                            Ok(header_root) => match &to_bytes_le![block_template.previous_block_hash(), header_root] {
-                                Ok(block_hash_bytes) => match Testnet2::block_hash_crh().hash(block_hash_bytes) {
-                                    Ok(block_hash) => {
-                                        if let Err(e) = {
-                                            accounting_sender
-                                                .send(AccountingMessage::NewBlock(
-                                                    block_height,
-                                                    block_hash.into(),
-                                                    reward,
-                                                ))
-                                                .await
-                                        } {
-                                            error!("Failed to send accounting message: {}", e);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to calculate block hash: {}", e);
-                                    }
-                                },
-                                Err(e) => error!("Failed to convert header root to bytes: {}", e),
-                            },
-                            Err(e) => {
-                                error!("Failed to get header root: {}", e);
-                            }
-                        }
-                    }
+                    // TODO: testnet3 rewards
+                    // if proof_difficulty <= epoch_challenge.difficulty_target() {
+                    //     info!(
+                    //         "Received unconfirmed block from prover {} with difficulty {} (target {})",
+                    //         prover_display,
+                    //         proof_difficulty,
+                    //         epoch_challenge.difficulty_target()
+                    //     );
+                    //     TODO: dummy operator
+                    //     if let Err(e) = operator_sender
+                    //         .send(OperatorMessage::PoolBlock(nonce, Data::Object(proof)))
+                    //         .await
+                    //     {
+                    //         error!("Failed to report unconfirmed block to operator: {}", e);
+                    //     }
+                    //     let reward = epoch_challenge.coinbase_record().value();
+                    //     TODO: dummy accounting
+                    //     match epoch_challenge.to_header_root() {
+                    //         Ok(header_root) => match &to_bytes_le![block_template.previous_block_hash(), header_root] {
+                    //             Ok(block_hash_bytes) => match Testnet2::block_hash_crh().hash(block_hash_bytes) {
+                    //                 Ok(block_hash) => {
+                    //                     if let Err(e) = {
+                    //                         accounting_sender
+                    //                             .send(AccountingMessage::NewBlock(
+                    //                                 block_height,
+                    //                                 block_hash.into(),
+                    //                                 reward,
+                    //                             ))
+                    //                             .await
+                    //                     } {
+                    //                         error!("Failed to send accounting message: {}", e);
+                    //                     }
+                    //                 }
+                    //                 Err(e) => {
+                    //                     error!("Failed to calculate block hash: {}", e);
+                    //                 }
+                    //             },
+                    //             Err(e) => error!("Failed to convert header root to bytes: {}", e),
+                    //         },
+                    //         Err(e) => {
+                    //             error!("Failed to get header root: {}", e);
+                    //         }
+                    //     }
+                    // }
                 });
             }
             ServerMessage::Exit => {}
@@ -670,7 +747,7 @@ impl Server {
         self.pool_state.write().await.speed().await
     }
 
-    pub async fn address_prover_count(&self, address: Address<Testnet2>) -> u32 {
+    pub async fn address_prover_count(&self, address: Address<Testnet3>) -> u32 {
         self.prover_address_connections
             .read()
             .await
@@ -679,7 +756,7 @@ impl Server {
             .unwrap_or(0)
     }
 
-    pub async fn address_speed(&self, address: Address<Testnet2>) -> Vec<f64> {
+    pub async fn address_speed(&self, address: Address<Testnet3>) -> Vec<f64> {
         let mut speed = vec![0.0, 0.0, 0.0, 0.0];
         let prover_connections_lock = self.prover_address_connections.read().await;
         let prover_connections = prover_connections_lock.get(&address);

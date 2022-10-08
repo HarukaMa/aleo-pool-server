@@ -9,10 +9,7 @@ use cache::Cache;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use snarkvm::{
-    dpc::{testnet2::Testnet2, AleoAmount},
-    traits::Network,
-};
+use snarkvm::prelude::{Network, Testnet3};
 use tokio::{
     sync::{
         mpsc::{channel, Sender},
@@ -104,7 +101,7 @@ struct Null {}
 pub enum AccountingMessage {
     NewShare(String, u64),
     SetN(u64),
-    NewBlock(u32, <Testnet2 as Network>::BlockHash, AleoAmount),
+    NewBlock(u32, <Testnet3 as Network>::BlockHash, i64),
     Exit,
 }
 
@@ -348,7 +345,8 @@ impl Accounting {
                 "height": height,
                 "block_hash": block_hash.to_string(),
                 "confirmed": if is_canonical {
-                    latest_block_height.saturating_sub(Testnet2::ALEO_MAXIMUM_FORK_DEPTH) >= height
+                    // TODO: check consensus
+                    true
                 } else {
                     false
                 },

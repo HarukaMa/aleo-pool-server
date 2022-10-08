@@ -2,12 +2,11 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use futures_util::sink::SinkExt;
 use rand::{thread_rng, Rng};
-use snarkos::environment::helpers::{BlockLocators, NodeType, Status};
-use snarkos::environment::network::{Data, Message, MessageCodec};
-use snarkos::environment::{Environment, OperatorTrial};
-use snarkvm::{
-    dpc::{testnet2::Testnet2, BlockHeader},
-    traits::Network,
+use snarkos::environment::{
+    helpers::{BlockLocators, NodeType, Status},
+    network::{Data, Message, MessageCodec},
+    Environment,
+    OperatorTrial,
 };
 use tokio::{
     net::TcpStream,

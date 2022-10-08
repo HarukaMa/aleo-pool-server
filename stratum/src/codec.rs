@@ -16,14 +16,15 @@ pub struct StratumCodec {
 impl Default for StratumCodec {
     fn default() -> Self {
         Self {
-            // Notify is ~400 bytes and submit is ~1750 bytes. 4096 should be enough for all messages.
+            // Notify is ~400 bytes and submit is ~1750 bytes. 4096 should be enough for all messages
+            // TODO: verify again
             codec: AnyDelimiterCodec::new_with_max_length(vec![b'\n'], vec![b'\n'], 4096),
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
-struct NotifyParams(String, String, String, String, String, String, bool);
+struct NotifyParams(String, String, Option<String>, bool);
 
 #[derive(Serialize, Deserialize)]
 struct SubscribeParams(String, String, Option<String>);
@@ -108,36 +109,20 @@ impl Encoder<StratumMessage> for StratumCodec {
                 };
                 serde_json::to_vec(&request).unwrap_or_default()
             }
-            StratumMessage::Notify(
-                job_id,
-                block_header_root,
-                hashed_leaves_1,
-                hashed_leaves_2,
-                hashed_leaves_3,
-                hashed_leaves_4,
-                clean_jobs,
-            ) => {
+            StratumMessage::Notify(job_id, epoch_challenge, address, clean_jobs) => {
                 let request = Request {
                     jsonrpc: Version::V2,
                     method: "mining.notify",
-                    params: Some(NotifyParams(
-                        job_id,
-                        block_header_root,
-                        hashed_leaves_1,
-                        hashed_leaves_2,
-                        hashed_leaves_3,
-                        hashed_leaves_4,
-                        clean_jobs,
-                    )),
+                    params: Some(NotifyParams(job_id, epoch_challenge, address, clean_jobs)),
                     id: None,
                 };
                 serde_json::to_vec(&request).unwrap_or_default()
             }
-            StratumMessage::Submit(id, worker_name, job_id, nonce, proof) => {
+            StratumMessage::Submit(id, worker_name, job_id, nonce, commitment, proof) => {
                 let request = Request {
                     jsonrpc: Version::V2,
                     method: "mining.submit",
-                    params: Some(vec![worker_name, job_id, nonce, proof]),
+                    params: Some(vec![worker_name, job_id, nonce, commitment, proof]),
                     id: Some(id),
                 };
                 serde_json::to_vec(&request).unwrap_or_default()
@@ -252,21 +237,14 @@ impl Decoder for StratumCodec {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params"));
                     }
                     let job_id = unwrap_str_value(&params[0])?;
-                    let block_header_root = unwrap_str_value(&params[1])?;
-                    let hashed_leaves_1 = unwrap_str_value(&params[2])?;
-                    let hashed_leaves_2 = unwrap_str_value(&params[3])?;
-                    let hashed_leaves_3 = unwrap_str_value(&params[4])?;
-                    let hashed_leaves_4 = unwrap_str_value(&params[5])?;
-                    let clean_jobs = unwrap_bool_value(&params[6])?;
-                    StratumMessage::Notify(
-                        job_id,
-                        block_header_root,
-                        hashed_leaves_1,
-                        hashed_leaves_2,
-                        hashed_leaves_3,
-                        hashed_leaves_4,
-                        clean_jobs,
-                    )
+                    let epoch_challenge = unwrap_str_value(&params[1])?;
+                    let address = match &params[2] {
+                        Value::String(s) => Some(s),
+                        Value::Null => None,
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid params")),
+                    };
+                    let clean_jobs = unwrap_bool_value(&params[3])?;
+                    StratumMessage::Notify(job_id, epoch_challenge, address.cloned(), clean_jobs)
                 }
                 "mining.submit" => {
                     if params.len() != 4 {
@@ -275,8 +253,9 @@ impl Decoder for StratumCodec {
                     let worker_name = unwrap_str_value(&params[0])?;
                     let job_id = unwrap_str_value(&params[1])?;
                     let nonce = unwrap_str_value(&params[2])?;
-                    let proof = unwrap_str_value(&params[3])?;
-                    StratumMessage::Submit(id.unwrap_or(Id::Num(0)), worker_name, job_id, nonce, proof)
+                    let commitment = unwrap_str_value(&params[3])?;
+                    let proof = unwrap_str_value(&params[4])?;
+                    StratumMessage::Submit(id.unwrap_or(Id::Num(0)), worker_name, job_id, nonce, commitment, proof)
                 }
                 _ => {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown method"));

@@ -1,14 +1,19 @@
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use serde_json::json;
-use snarkvm::dpc::{testnet2::Testnet2, Address};
+use snarkvm::{console::account::address::Address, prelude::Testnet3};
 use tokio::task;
 use tracing::info;
 use warp::{
     addr::remote,
-    get, head, path, reply,
+    get,
+    head,
+    path,
+    reply,
     reply::{json, Json},
-    serve, Filter, Reply,
+    serve,
+    Filter,
+    Reply,
 };
 
 use crate::{Accounting, Server};
@@ -74,7 +79,7 @@ async fn pool_stats(server: Arc<Server>) -> Json {
 }
 
 async fn address_stats(address: String, server: Arc<Server>) -> impl Reply {
-    if let Ok(address) = address.parse::<Address<Testnet2>>() {
+    if let Ok(address) = address.parse::<Address<Testnet3>>() {
         let speed = server.address_speed(address).await;
         let prover_count = server.address_prover_count(address).await;
         Ok(reply::with_status(

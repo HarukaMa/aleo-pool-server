@@ -1,7 +1,7 @@
 mod accounting;
 mod api;
 mod connection;
-mod operator_peer;
+// mod operator_peer;
 mod server;
 mod state_storage;
 
@@ -21,7 +21,7 @@ use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 use crate::{
     accounting::{Accounting, AccountingMessage},
-    operator_peer::Node,
+    //    operator_peer::Node,
     server::{Server, ServerMessage},
 };
 
@@ -31,6 +31,10 @@ struct Opt {
     /// Full operator node address
     #[clap(short, long)]
     operator: String,
+
+    /// Mining pool address
+    #[clap(short, long)]
+    address: String,
 
     /// Port to listen for incoming provers
     #[clap(short, long)]
@@ -97,13 +101,15 @@ async fn main() {
     let operator = opt.operator;
     let port = opt.port;
 
+    let address = opt.address;
+
     let accounting = Accounting::init(operator.clone());
 
-    let node = Node::init(operator);
+    // let node = Node::init(operator);
 
-    let server = Server::init(port, node.sender(), accounting.sender()).await;
+    let server = Server::init(port, address, (), accounting.sender()).await;
 
-    operator_peer::start(node, server.sender());
+    // operator_peer::start(node, server.sender());
 
     api::start(opt.api_port, accounting.clone(), server.clone());
 

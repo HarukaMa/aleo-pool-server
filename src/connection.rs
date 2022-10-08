@@ -1,20 +1,27 @@
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::{
+    net::SocketAddr,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
-use aleo_stratum::codec::{ResponseParams, StratumCodec};
-use aleo_stratum::message::StratumMessage;
+use aleo_stratum::{
+    codec::{ResponseParams, StratumCodec},
+    message::StratumMessage,
+};
 use anyhow::{anyhow, Result};
 use erased_serde::Serialize as ErasedSerialize;
 use futures_util::SinkExt;
 use semver::Version;
-use snarkvm::dpc::{testnet2::Testnet2, Address, Network, PoSWProof};
-use snarkvm::prelude::FromBytes;
-use tokio::time::timeout;
+use snarkvm::{
+    console::account::address::Address,
+    prelude::{Environment, FromBytes, Testnet3},
+};
+use snarkvm_algorithms::polycommit::kzg10::{KZGCommitment, KZGProof};
 use tokio::{
     net::TcpStream,
     sync::mpsc::{channel, Sender},
     task,
+    time::timeout,
 };
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
@@ -24,7 +31,7 @@ use crate::server::ServerMessage;
 
 pub struct Connection {
     user_agent: String,
-    address: Option<Address<Testnet2>>,
+    address: Option<Address<Testnet3>>,
     version: Version,
     last_received: Option<Instant>,
 }
@@ -36,11 +43,21 @@ static MIN_SUPPORTED_VERSION: Version = Version::new(1, 0, 0);
 static MAX_SUPPORTED_VERSION: Version = Version::new(1, 0, 0);
 
 impl Connection {
-    pub async fn init(stream: TcpStream, peer_addr: SocketAddr, server_sender: Sender<ServerMessage>) {
-        task::spawn(Connection::run(stream, peer_addr, server_sender));
+    pub async fn init(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        server_sender: Sender<ServerMessage>,
+        pool_address: Address<Testnet3>,
+    ) {
+        task::spawn(Connection::run(stream, peer_addr, server_sender, pool_address));
     }
 
-    pub async fn run(stream: TcpStream, peer_addr: SocketAddr, server_sender: Sender<ServerMessage>) {
+    pub async fn run(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        server_sender: Sender<ServerMessage>,
+        pool_address: Address<Testnet3>,
+    ) {
         let mut framed = Framed::new(stream, StratumCodec::default());
 
         let (sender, mut receiver) = channel(1024);
@@ -54,7 +71,7 @@ impl Connection {
 
         // Handshake
 
-        if let Ok((user_agent, version)) = Connection::handshake(&mut framed).await {
+        if let Ok((user_agent, version)) = Connection::handshake(&mut framed, pool_address.to_string()).await {
             conn.user_agent = user_agent;
             conn.version = version;
         } else {
@@ -109,7 +126,7 @@ impl Connection {
                         trace!("Received message {} from peer {:?}", msg.name(), peer_addr);
                         conn.last_received = Some(Instant::now());
                         match msg {
-                            StratumMessage::Submit(id, _worker_name, job_id, nonce, proof) => {
+                            StratumMessage::Submit(id, _worker_name, job_id, nonce, commitment, proof) => {
                                 let job_bytes = hex::decode(job_id.clone());
                                 if job_bytes.is_err() {
                                     warn!("Failed to decode job_id {} from peer {:?}", job_id, peer_addr);
@@ -119,15 +136,21 @@ impl Connection {
                                     warn!("Invalid job_id {} from peer {:?}", job_id, peer_addr);
                                     break;
                                 }
-                                let height = u32::from_le_bytes(job_bytes.unwrap().try_into().unwrap());
+                                let epoch_number = u64::from_le_bytes(job_bytes.unwrap().try_into().unwrap());
                                 let nonce_bytes = hex::decode(nonce.clone());
                                 if nonce_bytes.is_err() {
                                     warn!("Failed to decode nonce {} from peer {:?}", nonce, peer_addr);
                                     break;
                                 }
-                                let nonce = <Testnet2 as Network>::PoSWNonce::from_bytes_le(&nonce_bytes.unwrap());
-                                if nonce.is_err() {
-                                    warn!("Invalid nonce from peer {:?}", peer_addr);
+                                let nonce = u64::from_le_bytes(nonce_bytes.unwrap().try_into().unwrap());
+                                let commitment_bytes = hex::decode(commitment.clone());
+                                if commitment_bytes.is_err() {
+                                    warn!("Failed to decode commitment {} from peer {:?}", commitment, peer_addr);
+                                    break;
+                                }
+                                let commitment = KZGCommitment::<<Testnet3 as Environment>::PairingCurve>::from_bytes_le(&commitment_bytes.unwrap()[..]);
+                                if commitment.is_err() {
+                                    warn!("Invalid commitment from peer {:?}", peer_addr);
                                     break;
                                 }
                                 let proof_bytes = hex::decode(proof.clone());
@@ -135,12 +158,12 @@ impl Connection {
                                 warn!("Failed to decode proof {} from peer {:?}", proof, peer_addr);
                                     break;
                                 }
-                                let proof = PoSWProof::<Testnet2>::from_bytes_le(&proof_bytes.unwrap());
+                                let proof = KZGProof::<<Testnet3 as Environment>::PairingCurve>::from_bytes_le(&proof_bytes.unwrap());
                                 if proof.is_err() {
                                     warn!("Invalid proof from peer {:?}", peer_addr);
                                     break;
                                 }
-                                if let Err(e) = server_sender.send(ServerMessage::ProverSubmit(id, peer_addr, height, nonce.unwrap(), proof.unwrap())).await {
+                                if let Err(e) = server_sender.send(ServerMessage::ProverSubmit(id, peer_addr, epoch_number, nonce, commitment.unwrap(), proof.unwrap())).await {
                                     error!("Failed to send ProverSubmit message to server: {}", e);
                                 }
                             }
@@ -170,7 +193,10 @@ impl Connection {
         }
     }
 
-    pub async fn handshake(framed: &mut Framed<TcpStream, StratumCodec>) -> Result<(String, Version)> {
+    pub async fn handshake(
+        framed: &mut Framed<TcpStream, StratumCodec>,
+        pool_address: String,
+    ) -> Result<(String, Version)> {
         let peer_addr = framed.get_ref().peer_addr()?;
         match timeout(PEER_HANDSHAKE_TIMEOUT, framed.next()).await {
             Ok(Some(Ok(message))) => {
@@ -203,6 +229,7 @@ impl Connection {
                         let mut response_params: Vec<Box<dyn ErasedSerialize + Send + Sync>> = Vec::with_capacity(2);
                         response_params.push(Box::new(Option::<String>::None));
                         response_params.push(Box::new(Option::<String>::None));
+                        response_params.push(Box::new(Some(pool_address)));
                         framed
                             .send(StratumMessage::Response(
                                 id,
@@ -233,14 +260,14 @@ impl Connection {
         }
     }
 
-    pub async fn authorize(framed: &mut Framed<TcpStream, StratumCodec>) -> Result<Address<Testnet2>> {
+    pub async fn authorize(framed: &mut Framed<TcpStream, StratumCodec>) -> Result<Address<Testnet3>> {
         let peer_addr = framed.get_ref().peer_addr()?;
         match timeout(PEER_HANDSHAKE_TIMEOUT, framed.next()).await {
             Ok(Some(Ok(message))) => {
                 trace!("Received message {} from peer {:?}", message.name(), peer_addr);
                 match message {
                     StratumMessage::Authorize(id, address, _) => {
-                        let address = Address::<Testnet2>::from_str(address.as_str()).map_err(|e| {
+                        let address = Address::<Testnet3>::from_str(address.as_str()).map_err(|e| {
                             warn!("Invalid address {} from peer {:?}: {:?}", address, peer_addr, e);
                             e
                         })?;

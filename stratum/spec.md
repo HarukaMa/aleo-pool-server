@@ -85,7 +85,7 @@ Response:
 
 `RESULT` (bool): If the worker is authorized, this field MUST be `true`. Otherwise, it MUST be `null`, and the server SHOULD give reasons in the `error` object.
 
-### `mining.set_target`
+### `mining.set_target` `(Testnet3)`
 This notification is used by the server to set the target share difficulty for the jobs after the current one.
 
 Request:
@@ -94,7 +94,7 @@ Request:
 {"id": null, "method": "mining.set_target", "params": ["TARGET"]}
 ```
 
-`TARGET` (int): The target share difficulty. This is the `difficulty_target` for the proof, which MUST be between `1` and `2 ^ 64 - 1`.
+`TARGET` (int): The target share difficulty. This is the `proof_target` for the coinbase puzzle, which MUST be between `1` and `2 ^ 64 - 1`, where `1` means easiest.
 
 ### `mining.notify` `(Testnet3)`
 This notification is used by the server to notify the miner about the new job.

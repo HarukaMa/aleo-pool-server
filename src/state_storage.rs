@@ -125,24 +125,28 @@ impl<'a, K: Serialize + DeserializeOwned, V: Serialize + DeserializeOwned> Itera
             .with_big_endian()
             .with_fixint_encoding()
             .allow_trailing_bytes();
-        if self.iter.valid() {
-            let (raw_key, raw_value) = self.iter.next()?;
-            if raw_key[0] == self.storage_type.prefix()[0] {
-                let key = options.deserialize::<K>(&raw_key[1..]);
-                let value = options.deserialize::<V>(&raw_value);
-                return match key.and_then(|k| value.map(|v| (k, v))) {
-                    Ok(item) => Some(item),
-                    Err(e) => {
-                        error!("Failed to deserialize key or value: {:?}", e);
-                        error!("Key: {:?}", &raw_key);
-                        error!("Value: {:?}", &raw_value);
-                        None
+        match self.iter.next()? {
+            Ok((raw_key, raw_value)) => {
+                if raw_key[0] == self.storage_type.prefix()[0] {
+                    let key = options.deserialize::<K>(&raw_key[1..]);
+                    let value = options.deserialize::<V>(&raw_value);
+                    match key.and_then(|k| value.map(|v| (k, v))) {
+                        Ok(item) => Some(item),
+                        Err(e) => {
+                            error!("Failed to deserialize key or value: {:?}", e);
+                            error!("Key: {:?}", &raw_key);
+                            error!("Value: {:?}", &raw_value);
+                            None
+                        }
                     }
-                };
+                } else {
+                    None
+                }
             }
-            None
-        } else {
-            None
+            Err(e) => {
+                error!("Failed to iterate: {:?}", e);
+                None
+            }
         }
     }
 }

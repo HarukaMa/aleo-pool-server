@@ -13,7 +13,7 @@ use deadpool_postgres::{
     RecyclingMethod,
     Runtime,
 };
-use snarkvm::dpc::{testnet2::Testnet2, AleoAmount, Network};
+use snarkvm::prelude::{Network, Testnet3};
 use tokio_postgres::NoTls;
 use tracing::warn;
 
@@ -68,8 +68,8 @@ impl DB {
     pub async fn save_block(
         &self,
         height: u32,
-        block_hash: <Testnet2 as Network>::BlockHash,
-        reward: AleoAmount,
+        block_hash: <Testnet3 as Network>::BlockHash,
+        reward: i64,
         shares: HashMap<String, u64>,
     ) -> Result<()> {
         let mut conn = self.connection_pool.get().await?;
@@ -78,7 +78,7 @@ impl DB {
         let block_id: i32 = transaction
             .query_one(
                 "INSERT INTO block (height, block_hash, reward) VALUES ($1, $2, $3) RETURNING id",
-                &[&(height as i64), &block_hash.to_string(), &reward.as_i64()],
+                &[&(height as i64), &block_hash.to_string(), &reward],
             )
             .await?
             .try_get("id")?;

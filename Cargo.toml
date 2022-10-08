@@ -14,15 +14,16 @@ db = [
 
 [dependencies]
 #snarkvm = { path = "../../src/snarkVM" }
-snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
-snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
+#snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
+#snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
+snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", rev = "020daa51f" }
+snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", rev = "020daa51f" }
 #snarkos = { path = "../../src/snarkOS" }
 #snarkos-storage = { path = "../../src/snarkOS/storage" }
-snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-pool-staging" }
-snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-pool-staging" }
+#snarkos = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-pool-staging" }
+#snarkos-storage = { git = "https://github.com/HarukaMa/snarkOS.git", branch = "custom-pool-staging"}
 tracing = "0.1.35"
 tracing-log = "0.1.3"
-tracing-subscriber = "0.3.14"
 futures = "0.3.21"
 futures-util = "0.3.21"
 rand = "0.8.5"
@@ -52,6 +53,10 @@ path = "./cache"
 
 [dependencies.aleo-stratum]
 path = "./stratum"
+
+[dependencies.tracing-subscriber]
+version = "0.3.14"
+features = ["env-filter"]
 
 [dependencies.tokio-postgres]
 version = "0.7.6"
@@ -88,7 +93,7 @@ features = [
 ]
 
 [dependencies.rocksdb]
-version = "0.18.0"
+version = "0.19.0"
 default-features = false
 features = ["zstd"]
 
@@ -97,7 +102,7 @@ version = "0.3.1"
 features = ["futures-v0_3"]
 
 [dependencies.clap]
-version = "3.2.13"
+version = "4.0.10"
 features = ["derive"]
 
 [dev-dependencies.criterion]
