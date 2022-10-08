@@ -31,20 +31,12 @@ struct NotifyParams(String, String, Option<String>, bool);
 struct SubscribeParams(String, String, Option<String>);
 
 pub trait BoxedType: ErasedSerialize + Send + DowncastSync {}
+erased_serde::serialize_trait_object!(BoxedType);
 impl_downcast!(sync BoxedType);
 
 impl BoxedType for String {}
 impl BoxedType for Option<u64> {}
 impl BoxedType for Option<String> {}
-
-impl Serialize for dyn BoxedType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_some(self)
-    }
-}
 
 pub enum ResponseParams {
     Bool(bool),
