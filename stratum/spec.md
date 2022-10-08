@@ -1,6 +1,6 @@
 # Aleo Stratum Mining Protocol
 
-Version: 1.0.0 (Testnet2)
+Version: 2.0.0 (Testnet3)
 
 This document describes the stratum protocol for Aleo pool mining.
 
@@ -12,7 +12,9 @@ Stratum protocol is a widely used protocol for cryptocurrency mining, but many c
 
 This document will try to define a standard stratum protocol for Aleo pool mining.
 
-The mark `(Testnet2)` may appear in the document; this means the specific part of the protocol is dependent on the network implementation. Those parts might change later in Testnet3 and Mainnet.
+The mark `(Testnet3)` may appear in the document; this means the specific part of the protocol is dependent on the network implementation. Those parts might change later during Testnet3 and Mainnet.
+
+The current design of Testnet3 has a on-chain pool-like mechanism, so a Stratum protocol and third-party mining pools might not be too useful. That said, there might be situations where running a full node on every prover is not feasible and standalone pools and provers are desired. 
 
 ## Specification
 
@@ -53,12 +55,14 @@ Request:
 Response:
 
 ```json
-{"id": 1, "result": ["SESSION_ID", "SERVER_NONCE"], "error": null}
+{"id": 1, "result": ["SESSION_ID", "SERVER_NONCE", "ADDRESS"], "error": null}
 ```
 
 `SESSION_ID` (string): If the server supports session resuming, this field MUST be the same as the one sent by the miner in the request if there is one. Otherwise, it MUST be a new unique session ID. The server MUST set this field to `null` if it doesn't support session resuming.
 
-`SERVER_NONCE` (hex) `(Testnet2)`: Reserved for server nonce set by the server. See [Nonces](#Nonces) for more information. MUST be `null` if there is no server nonce set.
+`SERVER_NONCE` (hex) `(Testnet3)`: Server nonce set by the server. See [Nonces](#Nonces) for more information. MUST be `null` if there is no server nonce set.
+
+`ADDRESS` (string): The address of the pool. See [Address](#Address) for more information.
 
 ### `mining.authorize`
 This method is used by miners to authorize themselves to the mining pool. The miner MUST authorize at least one worker before submitting shares.
@@ -87,58 +91,75 @@ This notification is used by the server to set the target share difficulty for t
 Request:
 
 ```json
-{"id": null, "method": "mining.set_target", "params": [TARGET]}
+{"id": null, "method": "mining.set_target", "params": ["TARGET"]}
 ```
 
 `TARGET` (int): The target share difficulty. This is the `difficulty_target` for the proof, which MUST be between `1` and `2 ^ 64 - 1`.
 
-### `mining.notify` `(Testnet2)`
+### `mining.notify` `(Testnet3)`
 This notification is used by the server to notify the miner about the new job.
 
 Request: 
     
 ```json
-{"id": null, "method": "mining.notify", "params": ["JOB_ID", "BLOCK_HEADER_ROOT", "HASHED_LEAVES_1", "HASHED_LEAVES_2", "HASHED_LEAVES_3", "HASHED_LEAVES_4", CLEAN_JOBS]}
+{"id": null, "method": "mining.notify", "params": ["JOB_ID", "EPOCH_CHALLENGE", "ADDRESS", "CLEAN_JOBS"]}
 ```
 
 `JOB_ID` (string): The job ID.
 
-`BLOCK_HEADER_ROOT` (hex): The root of the block header tree.
+`EPOCH_CHALLENGE` (hex): The epoch challenge.
 
-`HASHED_LEAVES_1` (hex): The first hashed leaf of the block header tree.
-
-`HASHED_LEAVES_2` (hex): The second hashed leaf of the block header tree.
-
-`HASHED_LEAVES_3` (hex): The third hashed leaf of the block header tree.
-
-`HASHED_LEAVES_4` (hex): The fourth hashed leaf of the block header tree.
+`ADDRESS` (string): The address of the pool. MAY be null if the address is not changed. See [Address](#Address) for more information.
 
 `CLEAN_JOBS` (bool): If this field is `true`, the miner MUST discard all previous jobs as they are already stale. Otherwise, the miner MAY keep the previous jobs.
 
-The input parameters of PoSW proof is a `PoSWCircuit` object which is constructed by the root of the block header tree, the hashed leaves of the block header tree and a random nonce. The data provided in the `notify` message should be enough for the miner to start working on the proof.
+See [Notify](#Notify) for more information.
 
-This format is specifically subject to change in later testnets and mainnet.
-
-### `mining.submit` `(Testnet2)`
+### `mining.submit` `(Testnet3)`
 This method is used by miners to submit shares to the pool.
 
 Request:
 
 ```json
-{"id": 1, "method": "mining.submit", "params": ["WORKER_NAME", "JOB_ID", "NONCE", "PROOF"]}
+{"id": 1, "method": "mining.submit", "params": ["WORKER_NAME", "JOB_ID", "NONCE", "COMMITMENT", "PROOF"]}
 ```
 
 `WORKER_NAME` (string): The name of the authorized worker.
 
 `JOB_ID` (string): The job ID.
 
-`NONCE` (hex): The nonce of the proof.
+`NONCE` (hex): The nonce of the solution.
 
-`PROOF` (hex): The PoSW proof.
+`COMMITMENT` (hex): The commitment of the solution (`KZGCommitment`).
 
+`PROOF` (hex): The proof of the solution (`KZGProof`).
+
+
+## Comments
 
 ### Nonces
 
-The nonce of the PoSWProof is a field member defined on the BLS12-377 curve, not an arbitrary number. This makes nonce splitting hard (might be able to do it in the montgomery form). However, as the modulus of the field is large enough (about `2^252`), and considering the speed of existing miners are still slow, the possibility of different miners working on the same nonce should be small enough to be ignored. This specification has reserved the `EXTRANONCE` field for mining pool implementation attempts.  
+In Testnet3, the nonce is a `u64` type. Pool operators might want to set a server nonce prefix to prevent miners from mining on the same nonce. The miner MUST use the server nonce prefix to construct the proof if it is set. The server nonce MUST be set to `null` if there is no server nonce set.
+
+### Notify
+
+The input of the prove function in Testnet3 is `epoch_challenge`, `address` and `nonce`. Those three parameters are used to construct the polynomial to be evaluated. Therefore, the prover need to have the address of the pool. 
+
+This format is specifically subject to change in later testnet periods and mainnet.
+
+### Address
+
+The pool server sends the pool address in the response of `subscribe` message as the new proving mechanism requires it.
+
+Some pools might want to change the pool address between different blocks, thus every `notify` message might contain an address to override the previous ones.
 
 
+## Version History
+
+### 2.0.0
+
+Updated to reflect the changes in Testnet3.
+
+### 1.0.0
+
+Initial version for Testnet2.
