@@ -44,9 +44,7 @@ impl Serialize for dyn BoxedType {
     where
         S: serde::Serializer,
     {
-        let mut seq = serializer.serialize_seq(Some(1))?;
-        seq.serialize_element(self)?;
-        seq.end()
+        serializer.serialize_some(self)
     }
 }
 
