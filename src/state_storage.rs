@@ -31,7 +31,7 @@ impl Storage {
         if home.is_none() {
             panic!("No home directory found");
         }
-        let db_path = home.unwrap().join(".aleo_pool/state.db");
+        let db_path = home.unwrap().join(".aleo_pool_testnet3/state.db");
         let mut db_options = rocksdb::Options::default();
         db_options.create_if_missing(true);
         db_options.set_compression_type(rocksdb::DBCompressionType::Zstd);
