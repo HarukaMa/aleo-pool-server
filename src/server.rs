@@ -376,7 +376,7 @@ impl Server {
                     pac_write.insert(address, HashSet::from([peer_addr]));
                 }
                 drop(pac_write);
-                if let Err(e) = sender.send(StratumMessage::SetTarget(u64::MAX)).await {
+                if let Err(e) = sender.send(StratumMessage::SetTarget(1)).await {
                     error!("Error sending initial target to prover: {}", e);
                 }
                 if let Some(epoch_challenge) = self.latest_epoch_challenge.read().await.as_ref() {
