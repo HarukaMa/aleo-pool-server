@@ -14,7 +14,7 @@ use flurry::HashSet as FlurryHashSet;
 use json_rpc_types::{Error, ErrorCode, Id};
 use rand::thread_rng;
 use snarkvm::{
-    compiler::{hash_commitment, CoinbasePuzzle, CoinbaseVerifyingKey, EpochChallenge, PuzzleConfig},
+    compiler::{hash_commitment, CoinbasePuzzle, CoinbaseVerifyingKey, EpochChallenge, PuzzleConfig, UniversalSRS},
     console::account::address::Address,
     prelude::{Environment, Testnet3, ToBytes},
 };
@@ -165,36 +165,6 @@ impl PoolState {
     }
 }
 
-struct CoinbasePuzzleData {
-    srs: UniversalParams<<Testnet3 as Environment>::PairingCurve>,
-    vks: HashMap<u32, CoinbaseVerifyingKey<Testnet3>>,
-}
-
-impl CoinbasePuzzleData {
-    pub fn new() -> Self {
-        let rng = &mut thread_rng();
-        let max_degree = 1 << 15;
-        let max_config = PuzzleConfig { degree: max_degree };
-        let universal_srs = CoinbasePuzzle::<Testnet3>::setup(max_config, rng).unwrap();
-        Self {
-            srs: universal_srs,
-            vks: HashMap::new(),
-        }
-    }
-
-    pub fn init_vk(&mut self, degree: u32) {
-        info!("Generating new coinbase verifying key for degree {}", degree);
-        let config = PuzzleConfig { degree };
-        let vk = CoinbasePuzzle::<Testnet3>::trim(&self.srs, config).unwrap();
-        self.vks.insert(degree, vk.1);
-        info!("Done generating new coinbase verifying key for degree {}", degree);
-    }
-
-    pub fn get_vk(&self, degree: u32) -> &CoinbaseVerifyingKey<Testnet3> {
-        self.vks.get(&degree).unwrap()
-    }
-}
-
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ServerMessage {
@@ -242,7 +212,7 @@ pub struct Server {
     pool_state: Arc<RwLock<PoolState>>,
     prover_states: Arc<RwLock<HashMap<SocketAddr, RwLock<ProverState>>>>,
     prover_address_connections: Arc<RwLock<HashMap<Address<Testnet3>, HashSet<SocketAddr>>>>,
-    coinbase_puzzle_data: Arc<RwLock<CoinbasePuzzleData>>,
+    coinbase_verifying_key: CoinbaseVerifyingKey<Testnet3>,
     latest_epoch_number: AtomicU64,
     latest_epoch_challenge: Arc<RwLock<Option<EpochChallenge<Testnet3>>>>,
     latest_proof_target: AtomicU64,
@@ -269,9 +239,15 @@ impl Server {
             }
         };
 
-        info!("Initializing coinbase puzzle data");
-        let coinbase_puzzle_data = CoinbasePuzzleData::new();
-        info!("Coinbase puzzle data initialized");
+        info!("Initializing universal SRS");
+        let srs = UniversalSRS::<Testnet3>::load().expect("Failed to load SRS");
+        info!("Universal SRS initialized");
+
+        info!("Initializing coinbase verifying key");
+        let coinbase_verifying_key = CoinbasePuzzle::<Testnet3>::trim(&srs, PuzzleConfig { degree: (1 << 13) - 1 })
+            .expect("Failed to load coinbase verifying key")
+            .1;
+        info!("Coinbase verifying key initialized");
 
         let server = Arc::new(Server {
             sender,
@@ -283,7 +259,7 @@ impl Server {
             pool_state: Arc::new(RwLock::new(PoolState::new())),
             prover_states: Default::default(),
             prover_address_connections: Default::default(),
-            coinbase_puzzle_data: Arc::new(RwLock::new(coinbase_puzzle_data)),
+            coinbase_verifying_key,
             latest_epoch_number: AtomicU64::new(0),
             latest_epoch_challenge: Default::default(),
             latest_proof_target: AtomicU64::new(0),
@@ -418,11 +394,6 @@ impl Server {
             }
             ServerMessage::NewEpochChallenge(epoch_challenge, coinbase_target, proof_target) => {
                 info!("New epoch challenge: {}", epoch_challenge.epoch_number());
-                // pre-generate coinbase verifying key
-                self.coinbase_puzzle_data
-                    .write()
-                    .await
-                    .init_vk(epoch_challenge.degree().unwrap());
                 self.latest_epoch_number
                     .store(epoch_challenge.epoch_number(), Ordering::SeqCst);
                 self.latest_epoch_challenge
@@ -490,7 +461,7 @@ impl Server {
                 let seen_nonce = self.nonce_seen.clone();
                 let global_proof_target = self.latest_proof_target.load(Ordering::SeqCst);
                 let pool_address = self.pool_address;
-                let coinbase_puzzle_data = self.coinbase_puzzle_data.clone();
+                let verifying_key = self.coinbase_verifying_key.clone();
                 task::spawn(async move {
                     async fn send_result(
                         sender: &Sender<StratumMessage>,
@@ -658,9 +629,6 @@ impl Server {
                     };
                     let product_eval_at_point =
                         polynomial.evaluate(point) * epoch_challenge.epoch_polynomial().evaluate(point);
-                    let cpd = coinbase_puzzle_data.read().await;
-                    let verifying_key = cpd.get_vk(epoch_challenge.degree().unwrap()).clone();
-                    drop(cpd);
                     match KZG10::check(&verifying_key, &commitment, point, product_eval_at_point, &proof) {
                         Ok(true) => {
                             info!("Verified proof from prover {}", prover_display);
