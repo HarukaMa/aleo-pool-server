@@ -1,6 +1,7 @@
 use std::io;
 
 use bytes::BytesMut;
+use downcast_rs::{impl_downcast, DowncastSync};
 use erased_serde::Serialize as ErasedSerialize;
 use json_rpc_types::{Id, Request, Response, Version};
 use serde::{ser::SerializeSeq, Deserialize, Serialize};
@@ -29,15 +30,12 @@ struct NotifyParams(String, String, Option<String>, bool);
 #[derive(Serialize, Deserialize)]
 struct SubscribeParams(String, String, Option<String>);
 
-pub trait BoxedType: ErasedSerialize + Send + Sync {
-    fn as_any(self: Box<Self>) -> Box<dyn std::any::Any>;
-}
+pub trait BoxedType: ErasedSerialize + Send + DowncastSync {}
+impl_downcast!(sync BoxedType);
 
-impl<T: ErasedSerialize + Send + Sync + 'static> BoxedType for T {
-    fn as_any(self: Box<Self>) -> Box<dyn std::any::Any> {
-        self
-    }
-}
+impl BoxedType for String {}
+impl BoxedType for Option<u64> {}
+impl BoxedType for Option<String> {}
 
 impl Serialize for dyn BoxedType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
