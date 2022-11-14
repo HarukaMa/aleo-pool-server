@@ -64,8 +64,8 @@ impl ProverState {
             speed_15m: Speedometer::init_with_cache(Duration::from_secs(60 * 15), Duration::from_secs(30)),
             speed_30m: Speedometer::init_with_cache(Duration::from_secs(60 * 30), Duration::from_secs(30)),
             speed_1h: Speedometer::init_with_cache(Duration::from_secs(60 * 60), Duration::from_secs(30)),
-            current_target: 1024,
-            next_target: 1024,
+            current_target: 256,
+            next_target: 256,
         }
     }
 
@@ -140,13 +140,13 @@ impl PoolState {
         }
     }
 
-    pub async fn add_share(&mut self, value: u64) {
+    pub async fn add_share(&mut self) {
         let now = Instant::now();
-        self.speed_1m.event(value).await;
-        self.speed_5m.event(value).await;
-        self.speed_15m.event(value).await;
-        self.speed_30m.event(value).await;
-        self.speed_1h.event(value).await;
+        self.speed_1m.event(1).await;
+        self.speed_5m.event(1).await;
+        self.speed_15m.event(1).await;
+        self.speed_30m.event(1).await;
+        self.speed_1h.event(1).await;
         self.next_global_target_modifier = (self.speed_1m.speed().await / 10.0).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
@@ -350,7 +350,7 @@ impl Server {
                     pac_write.insert(address, HashSet::from([peer_addr]));
                 }
                 drop(pac_write);
-                if let Err(e) = sender.send(StratumMessage::SetTarget(1024)).await {
+                if let Err(e) = sender.send(StratumMessage::SetTarget(256)).await {
                     error!("Error sending initial target to prover: {}", e);
                 }
                 if let Some(epoch_challenge) = self.latest_epoch_challenge.read().await.as_ref() {
@@ -594,7 +594,7 @@ impl Server {
                         .await;
                         return;
                     }
-                    info!("Verifying solution from prover {}", prover_display);
+                    debug!("Verifying solution from prover {}", prover_display);
                     let polynomial = match prover_polynomial(&epoch_challenge, pool_address, nonce) {
                         Ok(polynomial) => polynomial,
                         Err(e) => {
@@ -638,7 +638,7 @@ impl Server {
                         &proof,
                     ) {
                         Ok(true) => {
-                            info!("Verified proof from prover {}", prover_display);
+                            debug!("Verified proof from prover {}", prover_display);
                         }
                         _ => {
                             warn!("Failed to verify proof from prover {}", prover_display);
@@ -654,8 +654,8 @@ impl Server {
                         }
                     }
 
-                    prover_state.write().await.add_share(proof_difficulty).await;
-                    pool_state.write().await.add_share(proof_difficulty).await;
+                    prover_state.write().await.add_share(prover_target).await;
+                    pool_state.write().await.add_share().await;
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
                             prover_state.read().await.address().to_string(),
