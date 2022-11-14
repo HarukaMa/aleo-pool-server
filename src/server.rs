@@ -673,7 +673,7 @@ impl Server {
                         prover_display, proof_difficulty
                     );
                     // TODO: testnet3 rewards
-                    if proof_difficulty <= global_proof_target {
+                    if proof_difficulty => global_proof_target {
                         info!(
                             "Received unconfirmed solution from prover {} with difficulty {} (target {})",
                             prover_display, proof_difficulty, global_proof_target
