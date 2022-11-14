@@ -135,7 +135,7 @@ impl Connection {
                                     warn!("Invalid job_id {} from peer {:?}", job_id, peer_addr);
                                     break;
                                 }
-                                let epoch_number = u64::from_le_bytes(job_bytes.unwrap().try_into().unwrap());
+                                let epoch_number = u32::from_le_bytes(job_bytes.unwrap().try_into().unwrap());
                                 let nonce_bytes = hex::decode(nonce.clone());
                                 if nonce_bytes.is_err() {
                                     warn!("Failed to decode nonce {} from peer {:?}", nonce, peer_addr);

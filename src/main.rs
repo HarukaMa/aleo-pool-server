@@ -1,9 +1,8 @@
 mod accounting;
 mod api;
 mod connection;
-// mod operator_peer;
 mod server;
-mod state_storage;
+mod validator_peer;
 
 #[cfg(feature = "db")]
 mod db;
@@ -12,6 +11,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use futures::stream::StreamExt;
+use rand::seq::SliceRandom;
 use signal_hook::consts::{SIGABRT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGUSR1};
 use signal_hook_tokio::Signals;
 use snarkvm::{console::account::address::Address, prelude::Testnet3};
@@ -20,6 +20,7 @@ use tracing::{debug, error, info, warn};
 use tracing_log::{log, LogTracer};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
+use crate::validator_peer::Node;
 use crate::{
     accounting::{Accounting, AccountingMessage},
     //    operator_peer::Node,
@@ -29,9 +30,9 @@ use crate::{
 #[derive(Debug, Parser)]
 #[clap(name = "pool_server", about = "Aleo mining pool server")]
 struct Opt {
-    /// Full operator node address
+    /// Validator node address
     #[clap(short, long)]
-    operator: String,
+    validator: Option<String>,
 
     /// Mining pool address
     #[clap(short, long)]
@@ -99,18 +100,31 @@ async fn main() {
         .build_global()
         .unwrap();
 
-    let operator = opt.operator;
+    let validator = match opt.validator {
+        Some(validator) => validator,
+        None => {
+            let bootstrap = [
+                "164.92.111.59:4133",
+                "159.223.204.96:4133",
+                "167.71.219.176:4133",
+                "157.245.205.209:4133",
+                "134.122.95.106:4133",
+                "161.35.24.55:4133",
+            ];
+            bootstrap.choose(&mut rand::thread_rng()).unwrap().to_string()
+        }
+    };
     let port = opt.port;
 
     let address = opt.address;
 
-    let accounting = Accounting::init(operator.clone());
+    let accounting = Accounting::init(validator.clone());
 
-    // let node = Node::init(operator);
+    let node = Node::init(validator);
 
-    let server = Server::init(port, address, (), accounting.sender()).await;
+    let server = Server::init(port, address, node.sender(), accounting.sender()).await;
 
-    // operator_peer::start(node, server.sender());
+    validator_peer::start(node, server.sender());
 
     api::start(opt.api_port, accounting.clone(), server.clone());
 

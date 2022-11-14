@@ -4,9 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use cache::Cache;
+use dirs::home_dir;
 use parking_lot::RwLock;
+use savefile::{load_file, save_file};
+use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use snarkvm::prelude::{Network, Testnet3};
@@ -24,7 +27,6 @@ use tracing::{debug, error, info};
 use crate::db::DB;
 use crate::{
     accounting::AccountingMessage::NewShare,
-    state_storage::{Storage, StorageData, StorageType},
     AccountingMessage::{Exit, NewBlock, SetN},
 };
 
@@ -32,7 +34,7 @@ trait PayoutModel {
     fn add_share(&mut self, share: Share);
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Clone, Savefile)]
 struct Share {
     value: u64,
     owner: String,
@@ -45,7 +47,7 @@ impl Share {
 }
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Clone, Savefile)]
 struct PPLNS {
     queue: VecDeque<Share>,
     current_n: Arc<RwLock<u64>>,
@@ -53,8 +55,13 @@ struct PPLNS {
 }
 
 impl PPLNS {
-    pub fn load(pplns_storage: StorageData<Null, PPLNS>) -> Self {
-        match pplns_storage.get(&Null {}) {
+    pub fn load() -> Self {
+        let home = home_dir();
+        if home.is_none() {
+            panic!("No home directory found");
+        }
+        let db_path = home.unwrap().join(".aleo_pool_testnet3_pre2/state");
+        match load_file(db_path, 0) {
             Ok(Some(pplns)) => pplns,
             Ok(None) | Err(_) => PPLNS {
                 queue: VecDeque::new(),
@@ -62,6 +69,15 @@ impl PPLNS {
                 n: Default::default(),
             },
         }
+    }
+
+    pub fn save(&self) -> std::result::Result<(), Error> {
+        let home = home_dir();
+        if home.is_none() {
+            panic!("No home directory found");
+        }
+        let db_path = home.unwrap().join(".aleo_pool_testnet3_pre2/state");
+        save_file(db_path, 0, self).map_err(|e| anyhow!("Failed to save PPLNS state: {}", e))
     }
 
     pub fn set_n(&mut self, n: u64) {
@@ -112,7 +128,6 @@ static PAY_INTERVAL: Duration = Duration::from_secs(60);
 pub struct Accounting {
     operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
-    pplns_storage: StorageData<Null, PPLNS>,
     #[cfg(feature = "db")]
     database: Arc<DB>,
     sender: Sender<AccountingMessage>,
@@ -123,13 +138,10 @@ pub struct Accounting {
 
 impl Accounting {
     pub fn init(operator: String) -> Arc<Accounting> {
-        let storage = Storage::load();
-        let pplns_storage = storage.init_data(StorageType::PPLNS);
-
         #[cfg(feature = "db")]
         let database = Arc::new(DB::init());
 
-        let pplns = Arc::new(TokioRwLock::new(PPLNS::load(pplns_storage.clone())));
+        let pplns = Arc::new(TokioRwLock::new(PPLNS::load()));
 
         let (sender, mut receiver) = channel(1024);
 
@@ -137,7 +149,6 @@ impl Accounting {
         let accounting = Accounting {
             operator: operator_host.into(),
             pplns,
-            pplns_storage,
             #[cfg(feature = "db")]
             database,
             sender,
@@ -147,7 +158,6 @@ impl Accounting {
         };
 
         let pplns = accounting.pplns.clone();
-        let pplns_storage = accounting.pplns_storage.clone();
         #[cfg(feature = "db")]
         let database = accounting.database.clone();
         let exit_lock = accounting.exit_lock.clone();
@@ -175,7 +185,7 @@ impl Accounting {
                     }
                     Exit => {
                         receiver.close();
-                        let _ = pplns_storage.put(&Null {}, &pplns.read().await.clone());
+                        let _ = pplns.read().await.save();
                         exit_lock.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
@@ -184,11 +194,10 @@ impl Accounting {
 
         // backup pplns
         let pplns = accounting.pplns.clone();
-        let pplns_storage = accounting.pplns_storage.clone();
         task::spawn(async move {
             loop {
                 sleep(Duration::from_secs(60)).await;
-                if let Err(e) = pplns_storage.put(&Null {}, &pplns.read().await.clone()) {
+                if let Err(e) = pplns.read().await.save() {
                     error!("Unable to backup pplns: {}", e);
                 }
             }
