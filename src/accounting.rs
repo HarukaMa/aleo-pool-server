@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fs::create_dir,
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
@@ -60,6 +61,7 @@ impl PPLNS {
         if home.is_none() {
             panic!("No home directory found");
         }
+        create_dir(home.as_ref().unwrap().join(".aleo_pool_testnet3_pre2")).unwrap();
         let db_path = home.unwrap().join(".aleo_pool_testnet3_pre2/state");
         match load_file(db_path, 0) {
             Ok(Some(pplns)) => pplns,
