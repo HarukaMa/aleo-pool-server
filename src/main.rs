@@ -76,6 +76,7 @@ async fn main() {
         .add_directive("hyper=info".parse().unwrap())
         .add_directive("warp=info".parse().unwrap())
         .add_directive("warp=warn".parse().unwrap())
+        .add_directive("tokio_util=info".parse().unwrap())
         .add_directive("api".parse().unwrap());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(filter)
