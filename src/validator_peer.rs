@@ -191,9 +191,12 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 }
                                             }
                                             SnarkOSMessage::Pong(..) => {
+                                                let was_connected = connected.load(Ordering::SeqCst);
                                                 connected.store(true, Ordering::SeqCst);
-                                                if let Err(e) = sender.send(SnarkOSMessage::PuzzleRequest(PuzzleRequest {})).await {
-                                                    error!("Failed to send puzzle request: {}", e);
+                                                if !was_connected {
+                                                    if let Err(e) = sender.send(SnarkOSMessage::PuzzleRequest(PuzzleRequest {})).await {
+                                                        error!("Failed to send puzzle request: {}", e);
+                                                    }
                                                 }
                                             }
                                             SnarkOSMessage::PuzzleResponse(PuzzleResponse {
