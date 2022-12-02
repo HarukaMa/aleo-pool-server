@@ -140,13 +140,13 @@ impl PoolState {
         }
     }
 
-    pub async fn add_share(&mut self) {
+    pub async fn add_share(&mut self, value: u64) {
         let now = Instant::now();
         self.speed_1m.event(1).await;
-        self.speed_5m.event(1).await;
-        self.speed_15m.event(1).await;
-        self.speed_30m.event(1).await;
-        self.speed_1h.event(1).await;
+        self.speed_5m.event(value).await;
+        self.speed_15m.event(value).await;
+        self.speed_30m.event(value).await;
+        self.speed_1h.event(value).await;
         self.next_global_target_modifier = (self.speed_1m.speed().await / 10.0).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
@@ -655,7 +655,7 @@ impl Server {
                     }
 
                     prover_state.write().await.add_share(prover_target).await;
-                    pool_state.write().await.add_share().await;
+                    pool_state.write().await.add_share(prover_target).await;
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
                             prover_state.read().await.address().to_string(),
