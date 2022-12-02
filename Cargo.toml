@@ -16,11 +16,11 @@ db = [
 #snarkvm = { path = "../../src/snarkVM" }
 #snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
 #snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
-snarkvm = "0.9.6"
-snarkvm-algorithms = "0.9.6"
-snarkvm-curves = "0.9.6"
-snarkvm-utilities = "0.9.6"
-snarkos-node-executor = { git = "https://github.com/AleoHQ/snarkOS.git", branch = "testnet3" }
+snarkvm = "0.9.9"
+snarkvm-algorithms = "0.9.9"
+snarkvm-curves = "0.9.9"
+snarkvm-utilities = "0.9.9"
+snarkos-account = { git = "https://github.com/AleoHQ/snarkOS.git", branch = "testnet3" }
 snarkos-node-messages = { git = "https://github.com/AleoHQ/snarkOS.git", branch = "testnet3" }
 tracing = "0.1.37"
 tracing-log = "0.1.3"

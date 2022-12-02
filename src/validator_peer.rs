@@ -7,12 +7,14 @@ use std::{
 };
 
 use futures_util::sink::SinkExt;
-use snarkos_node_executor::{NodeType, Status};
+use rand::{rngs::OsRng, Rng};
+use snarkos_account::Account;
 use snarkos_node_messages::{
     ChallengeRequest,
     ChallengeResponse,
     Data,
     MessageCodec,
+    NodeType,
     Ping,
     Pong,
     PuzzleRequest,
@@ -86,6 +88,8 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                 }
             }
         });
+        let rng = &mut OsRng;
+        let random_account = Account::new(rng).unwrap();
         loop {
             info!("Connecting to operator...");
             match timeout(Duration::from_secs(5), TcpStream::connect(&node.operator)).await {
@@ -96,10 +100,10 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                             Framed::new(socket, Default::default());
                         let challenge = SnarkOSMessage::ChallengeRequest(ChallengeRequest {
                             version: SnarkOSMessage::VERSION,
-                            fork_depth: 4096,
-                            node_type: NodeType::Prover,
-                            status: Status::Ready,
                             listener_port: 4140,
+                            node_type: NodeType::Prover,
+                            address: random_account.address(),
+                            nonce: rng.gen(),
                         });
                         if let Err(e) = framed.send(challenge).await {
                             error!("Error sending challenge request: {}", e);
@@ -117,13 +121,14 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                 }
                                 result = framed.next() => match result {
                                     Some(Ok(message)) => {
-                                        trace!("Received {} from operator", message.name());
+                                        trace!("Received {} from validator", message.name());
                                         match message {
                                             SnarkOSMessage::ChallengeRequest(ChallengeRequest {
                                                 version,
-                                                fork_depth: _,
+                                                listener_port: _,
                                                 node_type,
-                                                ..
+                                                address: _,
+                                                nonce,
                                             }) => {
                                                 if version < SnarkOSMessage::VERSION {
                                                     error!("Peer is running an older version of the protocol");
@@ -136,7 +141,8 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     break;
                                                 }
                                                 let response = SnarkOSMessage::ChallengeResponse(ChallengeResponse {
-                                                    header: Data::Object(genesis_header),
+                                                    genesis_header,
+                                                    signature: Data::Object(random_account.sign_bytes(&nonce.to_le_bytes(), rng).unwrap()),
                                                 });
                                                 if let Err(e) = framed.send(response).await {
                                                     error!("Error sending challenge response: {:?}", e);
@@ -145,22 +151,13 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 }
                                             }
                                             SnarkOSMessage::ChallengeResponse(message) => {
-                                                let block_header = match message.header.deserialize().await {
-                                                    Ok(block_header) => block_header,
-                                                    Err(error) => {
-                                                        error!("Error deserializing block header: {:?}", error);
-                                                        sleep(Duration::from_secs(5)).await;
-                                                        break;
-                                                    }
-                                                };
-                                                match block_header == genesis_header {
+                                                match message.genesis_header == genesis_header {
                                                     true => {
                                                         // Send the first `Ping` message to the peer.
                                                         let message = SnarkOSMessage::Ping(Ping {
                                                             version: SnarkOSMessage::VERSION,
-                                                            fork_depth: 4096,
                                                             node_type: NodeType::Prover,
-                                                            status: Status::Ready,
+                                                            block_locators: None,
                                                         });
                                                         if let Err(e) = framed.send(message).await {
                                                             error!("Error sending ping: {:?}", e);
@@ -182,6 +179,16 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 } else {
                                                     debug!("Sent pong");
                                                 }
+                                                let message = SnarkOSMessage::Ping(Ping {
+                                                    version: SnarkOSMessage::VERSION,
+                                                    node_type: NodeType::Prover,
+                                                    block_locators: None,
+                                                });
+                                                if let Err(e) = framed.send(message).await {
+                                                    error!("Error sending ping: {:?}", e);
+                                                } else {
+                                                    debug!("Sent ping");
+                                                }
                                             }
                                             SnarkOSMessage::Pong(..) => {
                                                 connected.store(true, Ordering::SeqCst);
@@ -190,19 +197,19 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 }
                                             }
                                             SnarkOSMessage::PuzzleResponse(PuzzleResponse {
-                                                epoch_challenge, block
+                                                epoch_challenge, block_header
                                             }) => {
-                                                let block = match block.deserialize().await {
-                                                    Ok(block) => block,
+                                                let block_header = match block_header.deserialize().await {
+                                                    Ok(block_header) => block_header,
                                                     Err(error) => {
-                                                        error!("Error deserializing block: {:?}", error);
+                                                        error!("Error deserializing block header: {:?}", error);
                                                         sleep(Duration::from_secs(5)).await;
                                                         break;
                                                     }
                                                 };
                                                 let epoch_number = epoch_challenge.epoch_number();
                                                 if let Err(e) = server_sender.send(ServerMessage::NewEpochChallenge(
-                                                    epoch_challenge, block.coinbase_target(), block.proof_target()
+                                                    epoch_challenge, block_header.coinbase_target(), block_header.proof_target()
                                                 )).await {
                                                     error!("Error sending new block template to pool server: {}", e);
                                                 } else {
