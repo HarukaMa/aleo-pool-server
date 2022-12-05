@@ -76,11 +76,13 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
             .header();
         let connected = Arc::new(AtomicBool::new(false));
         let peer_sender = sender.clone();
+        let peer_sender_ping = sender.clone();
 
         let connected_req = connected.clone();
+        let connected_ping = connected.clone();
         task::spawn(async move {
             loop {
-                sleep(Duration::from_secs(Testnet3::ANCHOR_TIME as u64)).await;
+                sleep(Duration::from_secs(15)).await;
                 if connected_req.load(Ordering::SeqCst) {
                     if let Err(e) = peer_sender.send(SnarkOSMessage::PuzzleRequest(PuzzleRequest {})).await {
                         error!("Failed to send puzzle request: {}", e);
@@ -88,6 +90,24 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                 }
             }
         });
+        task::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                if connected_ping.load(Ordering::SeqCst) {
+                    if let Err(e) = peer_sender_ping
+                        .send(SnarkOSMessage::Ping(Ping {
+                            version: SnarkOSMessage::VERSION,
+                            node_type: NodeType::Prover,
+                            block_locators: None,
+                        }))
+                        .await
+                    {
+                        error!("Failed to send ping: {}", e);
+                    }
+                }
+            }
+        });
+
         let rng = &mut OsRng;
         let random_account = Account::new(rng).unwrap();
         loop {
@@ -132,12 +152,12 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }) => {
                                                 if version < SnarkOSMessage::VERSION {
                                                     error!("Peer is running an older version of the protocol");
-                                                    sleep(Duration::from_secs(5)).await;
+                                                    sleep(Duration::from_secs(25)).await;
                                                     break;
                                                 }
                                                 if node_type != NodeType::Beacon && node_type != NodeType::Validator {
                                                     error!("Peer is not a beacon or validator");
-                                                    sleep(Duration::from_secs(5)).await;
+                                                    sleep(Duration::from_secs(25)).await;
                                                     break;
                                                 }
                                                 let response = SnarkOSMessage::ChallengeResponse(ChallengeResponse {
@@ -152,22 +172,18 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }
                                             SnarkOSMessage::ChallengeResponse(message) => {
                                                 match message.genesis_header == genesis_header {
-                                                    true => {
-                                                        // Send the first `Ping` message to the peer.
-                                                        let message = SnarkOSMessage::Ping(Ping {
-                                                            version: SnarkOSMessage::VERSION,
-                                                            node_type: NodeType::Prover,
-                                                            block_locators: None,
-                                                        });
-                                                        if let Err(e) = framed.send(message).await {
-                                                            error!("Error sending ping: {:?}", e);
-                                                        } else {
-                                                            debug!("Sent ping");
+                                                    _ => {
+                                                        let was_connected = connected.load(Ordering::SeqCst);
+                                                        connected.store(true, Ordering::SeqCst);
+                                                        if !was_connected {
+                                                            if let Err(e) = sender.send(SnarkOSMessage::PuzzleRequest(PuzzleRequest {})).await {
+                                                                error!("Failed to send puzzle request: {}", e);
+                                                            }
                                                         }
                                                     }
                                                     false => {
                                                         error!("Peer has a different genesis block");
-                                                        sleep(Duration::from_secs(5)).await;
+                                                        sleep(Duration::from_secs(25)).await;
                                                         break;
                                                     }
                                                 }
@@ -190,15 +206,6 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     debug!("Sent ping");
                                                 }
                                             }
-                                            SnarkOSMessage::Pong(..) => {
-                                                let was_connected = connected.load(Ordering::SeqCst);
-                                                connected.store(true, Ordering::SeqCst);
-                                                if !was_connected {
-                                                    if let Err(e) = sender.send(SnarkOSMessage::PuzzleRequest(PuzzleRequest {})).await {
-                                                        error!("Failed to send puzzle request: {}", e);
-                                                    }
-                                                }
-                                            }
                                             SnarkOSMessage::PuzzleResponse(PuzzleResponse {
                                                 epoch_challenge, block_header
                                             }) => {
@@ -206,7 +213,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     Ok(block_header) => block_header,
                                                     Err(error) => {
                                                         error!("Error deserializing block header: {:?}", error);
-                                                        sleep(Duration::from_secs(5)).await;
+                                                        sleep(Duration::from_secs(25)).await;
                                                         break;
                                                     }
                                                 };
@@ -221,7 +228,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }
                                             SnarkOSMessage::Disconnect(message) => {
                                                 error!("Peer disconnected: {:?}", message.reason);
-                                                sleep(Duration::from_secs(5)).await;
+                                                sleep(Duration::from_secs(25)).await;
                                                 break;
                                             }
                                             _ => {
@@ -234,7 +241,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                     }
                                     None => {
                                         error!("Disconnected from operator");
-                                        sleep(Duration::from_secs(5)).await;
+                                        sleep(Duration::from_secs(25)).await;
                                         break;
                                     }
                                 }
@@ -243,12 +250,12 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                     }
                     Err(e) => {
                         error!("Failed to connect to operator: {}", e);
-                        sleep(Duration::from_secs(5)).await;
+                        sleep(Duration::from_secs(25)).await;
                     }
                 },
                 Err(_) => {
                     error!("Failed to connect to operator: Timed out");
-                    sleep(Duration::from_secs(5)).await;
+                    sleep(Duration::from_secs(25)).await;
                 }
             }
         }

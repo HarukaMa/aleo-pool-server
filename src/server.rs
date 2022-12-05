@@ -3,7 +3,7 @@ use std::{
     fmt::{Display, Formatter},
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -391,7 +391,9 @@ impl Server {
                 self.authenticated_provers.write().await.remove(&peer_addr);
             }
             ServerMessage::NewEpochChallenge(epoch_challenge, coinbase_target, proof_target) => {
-                if self.latest_epoch_number.load(Ordering::SeqCst) != epoch_challenge.epoch_number() {
+                if self.latest_epoch_number.load(Ordering::SeqCst) != epoch_challenge.epoch_number()
+                    || epoch_challenge.epoch_number() == 0
+                {
                     info!("New epoch challenge: {}", epoch_challenge.epoch_number());
                     self.latest_epoch_number
                         .store(epoch_challenge.epoch_number(), Ordering::SeqCst);
@@ -631,7 +633,7 @@ impl Server {
                     let product_eval_at_point =
                         polynomial.evaluate(point) * epoch_challenge.epoch_polynomial().evaluate(point);
                     match KZG10::check(
-                        &coinbase_puzzle.coinbase_verifying_key(),
+                        coinbase_puzzle.coinbase_verifying_key(),
                         &commitment,
                         point,
                         product_eval_at_point,
@@ -691,34 +693,13 @@ impl Server {
                         {
                             error!("Failed to report unconfirmed block to operator: {}", e);
                         }
-                        // TODO: dummy accounting
-                        // let reward = epoch_challenge.coinbase_record().value();
-                        // match epoch_challenge.to_header_root() {
-                        //     Ok(header_root) => match &to_bytes_le![block_template.previous_block_hash(), header_root] {
-                        //         Ok(block_hash_bytes) => match Testnet2::block_hash_crh().hash(block_hash_bytes) {
-                        //             Ok(block_hash) => {
-                        //                 if let Err(e) = {
-                        //                     accounting_sender
-                        //                         .send(AccountingMessage::NewBlock(
-                        //                             block_height,
-                        //                             block_hash.into(),
-                        //                             reward,
-                        //                         ))
-                        //                         .await
-                        //                 } {
-                        //                     error!("Failed to send accounting message: {}", e);
-                        //                 }
-                        //             }
-                        //             Err(e) => {
-                        //                 error!("Failed to calculate block hash: {}", e);
-                        //             }
-                        //         },
-                        //         Err(e) => error!("Failed to convert header root to bytes: {}", e),
-                        //     },
-                        //     Err(e) => {
-                        //         error!("Failed to get header root: {}", e);
-                        //     }
-                        // }
+                        if let Err(e) = {
+                            accounting_sender
+                                .send(AccountingMessage::NewSolution(PuzzleCommitment::new(commitment)))
+                                .await
+                        } {
+                            error!("Failed to send accounting message: {}", e);
+                        }
                     }
                 });
             }

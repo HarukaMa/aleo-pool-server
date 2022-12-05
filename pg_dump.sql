@@ -2,8 +2,8 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 14.4 (Debian 14.4-1.pgdg120+1)
--- Dumped by pg_dump version 14.4
+-- Dumped from database version 15.1
+-- Dumped by pg_dump version 15.0
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -24,26 +24,24 @@ CREATE SCHEMA pool;
 
 
 --
--- Name: pay_block(integer); Type: PROCEDURE; Schema: pool; Owner: -
+-- Name: pay_solution(integer); Type: PROCEDURE; Schema: pool; Owner: -
 --
 
-CREATE PROCEDURE pool.pay_block(IN block_id_arg integer)
+CREATE PROCEDURE pool.pay_solution(IN solution_id_arg integer)
     LANGUAGE plpython3u
-    AS $_$block = plpy.execute(f"SELECT * FROM block WHERE id = {block_id_arg}", 1)
-if block.nrows() == 0:
-  plpy.error("Block id does not exist")
-if block[0]["paid"]:
-  plpy.error("Block already paid")
-if not block[0]["is_canonical"]:
-  plpy.error("Block is not canonical")
-block_id = block[0]["id"]
-shares = plpy.execute(f"SELECT * FROM share WHERE block_id = {block_id}")
+    AS $_$solution = plpy.execute(f"SELECT * FROM solution WHERE id = {solution_id_arg}", 1)
+if solution.nrows() == 0:
+  plpy.error("Solution id does not exist")
+if solution[0]["paid"]:
+  plpy.error("Solution already paid")
+solution_id = solution[0]["id"]
+shares = plpy.execute(f"SELECT * FROM share WHERE solution_id = {solution_id}")
 if shares.nrows() == 0:
-  plpy.fatal("No share data for block")
+  plpy.fatal("No share data for solution")
 data = {}
 for share in shares:
-  data[share["miner"]] = share["share"]
-raw_reward = block[0]["reward"]
+  data[share["address"]] = share["share"]
+raw_reward = solution[0]["reward"]
 reward = int(raw_reward * 0.995)
 total_shares = sum(data.values())
 reward_per_share = reward // total_shares
@@ -53,18 +51,18 @@ def get_plan(name, stmt, types):
   plan = plpy.prepare(stmt, types)
   SD[name] = plan
   return plan
-payout_plan = get_plan("payout_plan", "INSERT INTO payout (block_id, miner, amount) VALUES ($1, $2, $3)", ["integer", "text", "bigint"])
+payout_plan = get_plan("payout_plan", "INSERT INTO payout (solution_id, address, amount) VALUES ($1, $2, $3)", ["integer", "text", "bigint"])
 balance_plan = get_plan("balance_plan", "INSERT INTO balance (address, unpaid) VALUES ($1, $2) ON CONFLICT (address) DO UPDATE SET unpaid = balance.unpaid + $2", ["text", "bigint"])
 stats_plan = get_plan("stats_plan", "INSERT INTO stats (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = stats.value + $2", ["text", "bigint"])
-block_plan = get_plan("block_plan", "UPDATE block SET paid = true WHERE id = $1", ["integer"])
+solution_plan = get_plan("block_plan", "UPDATE solution SET paid = true WHERE id = $1", ["integer"])
 try:
   with plpy.subtransaction():
     paid = 0
     for miner, share in data.items():
       amount = reward_per_share * share
-      payout_plan.execute([block_id, miner, amount])
+      payout_plan.execute([solution_id, miner, amount])
       balance_plan.execute([miner, amount])
-      block_plan.execute([block_id])
+      solution_plan.execute([solution_id])
       paid += amount
     stats_plan.execute(["total_paid", paid])
     stats_plan.execute(["total_fee", raw_reward - reward])
@@ -113,18 +111,18 @@ ALTER SEQUENCE pool.balance_id_seq OWNED BY pool.balance.id;
 
 
 --
--- Name: block; Type: TABLE; Schema: pool; Owner: -
+-- Name: solution; Type: TABLE; Schema: pool; Owner: -
 --
 
-CREATE TABLE pool.block (
+CREATE TABLE pool.solution (
     id integer NOT NULL,
-    height bigint NOT NULL,
-    block_hash text NOT NULL,
-    is_canonical boolean DEFAULT true,
-    reward bigint NOT NULL,
-    "timestamp" bigint DEFAULT EXTRACT(epoch FROM now()),
+    height bigint,
+    reward bigint,
+    "timestamp" bigint DEFAULT EXTRACT(epoch FROM now()) NOT NULL,
     paid boolean DEFAULT false NOT NULL,
-    checked boolean DEFAULT false NOT NULL
+    valid boolean DEFAULT false NOT NULL,
+    commitment text NOT NULL,
+    checked integer DEFAULT 0 NOT NULL
 );
 
 
@@ -145,7 +143,7 @@ CREATE SEQUENCE pool.block_id_seq
 -- Name: block_id_seq; Type: SEQUENCE OWNED BY; Schema: pool; Owner: -
 --
 
-ALTER SEQUENCE pool.block_id_seq OWNED BY pool.block.id;
+ALTER SEQUENCE pool.block_id_seq OWNED BY pool.solution.id;
 
 
 --
@@ -154,8 +152,8 @@ ALTER SEQUENCE pool.block_id_seq OWNED BY pool.block.id;
 
 CREATE TABLE pool.payout (
     id integer NOT NULL,
-    block_id integer NOT NULL,
-    miner text NOT NULL,
+    solution_id integer NOT NULL,
+    address text NOT NULL,
     amount bigint NOT NULL,
     "timestamp" integer DEFAULT EXTRACT(epoch FROM now())
 );
@@ -187,8 +185,8 @@ ALTER SEQUENCE pool.payout_id_seq OWNED BY pool.payout.id;
 
 CREATE TABLE pool.share (
     id integer NOT NULL,
-    block_id integer NOT NULL,
-    miner text NOT NULL,
+    solution_id integer NOT NULL,
+    address text NOT NULL,
     share bigint NOT NULL
 );
 
@@ -231,13 +229,6 @@ ALTER TABLE ONLY pool.balance ALTER COLUMN id SET DEFAULT nextval('pool.balance_
 
 
 --
--- Name: block id; Type: DEFAULT; Schema: pool; Owner: -
---
-
-ALTER TABLE ONLY pool.block ALTER COLUMN id SET DEFAULT nextval('pool.block_id_seq'::regclass);
-
-
---
 -- Name: payout id; Type: DEFAULT; Schema: pool; Owner: -
 --
 
@@ -252,19 +243,18 @@ ALTER TABLE ONLY pool.share ALTER COLUMN id SET DEFAULT nextval('pool.share_id_s
 
 
 --
+-- Name: solution id; Type: DEFAULT; Schema: pool; Owner: -
+--
+
+ALTER TABLE ONLY pool.solution ALTER COLUMN id SET DEFAULT nextval('pool.block_id_seq'::regclass);
+
+
+--
 -- Name: balance balance_pk; Type: CONSTRAINT; Schema: pool; Owner: -
 --
 
 ALTER TABLE ONLY pool.balance
     ADD CONSTRAINT balance_pk PRIMARY KEY (id);
-
-
---
--- Name: block block_pk; Type: CONSTRAINT; Schema: pool; Owner: -
---
-
-ALTER TABLE ONLY pool.block
-    ADD CONSTRAINT block_pk PRIMARY KEY (id);
 
 
 --
@@ -284,6 +274,14 @@ ALTER TABLE ONLY pool.share
 
 
 --
+-- Name: solution solution_pk; Type: CONSTRAINT; Schema: pool; Owner: -
+--
+
+ALTER TABLE ONLY pool.solution
+    ADD CONSTRAINT solution_pk PRIMARY KEY (id);
+
+
+--
 -- Name: stats stats_pk; Type: CONSTRAINT; Schema: pool; Owner: -
 --
 
@@ -299,54 +297,47 @@ CREATE UNIQUE INDEX balance_address_uindex ON pool.balance USING btree (address)
 
 
 --
--- Name: block_block_hash_uindex; Type: INDEX; Schema: pool; Owner: -
+-- Name: payout_address_index; Type: INDEX; Schema: pool; Owner: -
 --
 
-CREATE UNIQUE INDEX block_block_hash_uindex ON pool.block USING btree (block_hash);
-
-
---
--- Name: block_checked_index; Type: INDEX; Schema: pool; Owner: -
---
-
-CREATE INDEX block_checked_index ON pool.block USING btree (checked);
+CREATE INDEX payout_address_index ON pool.payout USING btree (address);
 
 
 --
--- Name: block_height_index; Type: INDEX; Schema: pool; Owner: -
+-- Name: solution_height_index; Type: INDEX; Schema: pool; Owner: -
 --
 
-CREATE INDEX block_height_index ON pool.block USING btree (height);
-
-
---
--- Name: block_paid_index; Type: INDEX; Schema: pool; Owner: -
---
-
-CREATE INDEX block_paid_index ON pool.block USING btree (paid);
+CREATE INDEX solution_height_index ON pool.solution USING btree (height);
 
 
 --
--- Name: payout_miner_index; Type: INDEX; Schema: pool; Owner: -
+-- Name: solution_paid_index; Type: INDEX; Schema: pool; Owner: -
 --
 
-CREATE INDEX payout_miner_index ON pool.payout USING btree (miner);
+CREATE INDEX solution_paid_index ON pool.solution USING btree (paid);
 
 
 --
--- Name: payout payout_block_id_fk; Type: FK CONSTRAINT; Schema: pool; Owner: -
+-- Name: solution_valid_index; Type: INDEX; Schema: pool; Owner: -
+--
+
+CREATE INDEX solution_valid_index ON pool.solution USING btree (valid);
+
+
+--
+-- Name: payout payout_solution_id_fk; Type: FK CONSTRAINT; Schema: pool; Owner: -
 --
 
 ALTER TABLE ONLY pool.payout
-    ADD CONSTRAINT payout_block_id_fk FOREIGN KEY (block_id) REFERENCES pool.block(id);
+    ADD CONSTRAINT payout_solution_id_fk FOREIGN KEY (solution_id) REFERENCES pool.solution(id);
 
 
 --
--- Name: share share_block_id_fk; Type: FK CONSTRAINT; Schema: pool; Owner: -
+-- Name: share share_solution_id_fk; Type: FK CONSTRAINT; Schema: pool; Owner: -
 --
 
 ALTER TABLE ONLY pool.share
-    ADD CONSTRAINT share_block_id_fk FOREIGN KEY (block_id) REFERENCES pool.block(id);
+    ADD CONSTRAINT share_solution_id_fk FOREIGN KEY (solution_id) REFERENCES pool.solution(id);
 
 
 --

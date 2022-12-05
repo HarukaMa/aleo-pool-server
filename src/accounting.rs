@@ -1,11 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs::create_dir_all,
+    path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, Error, Result};
 use cache::Cache;
 use dirs::home_dir;
 use parking_lot::RwLock;
@@ -13,7 +14,7 @@ use savefile::{load_file, save_file};
 use savefile_derive::Savefile;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use snarkvm::prelude::{Network, Testnet3};
+use snarkvm::prelude::{PuzzleCommitment, Testnet3};
 use tokio::{
     sync::{
         mpsc::{channel, Sender},
@@ -27,8 +28,8 @@ use tracing::{debug, error, info};
 #[cfg(feature = "db")]
 use crate::db::DB;
 use crate::{
-    accounting::AccountingMessage::NewShare,
-    AccountingMessage::{Exit, NewBlock, SetN},
+    accounting::AccountingMessage::{NewShare, NewSolution},
+    AccountingMessage::{Exit, SetN},
 };
 
 trait PayoutModel {
@@ -61,16 +62,16 @@ impl PPLNS {
         if home.is_none() {
             panic!("No home directory found");
         }
-        create_dir_all(home.as_ref().unwrap().join(".aleo_pool_testnet3_pre2")).unwrap();
-        let db_path = home.unwrap().join(".aleo_pool_testnet3_pre2/state");
-        match load_file(db_path, 0) {
-            Ok(Some(pplns)) => pplns,
-            Ok(None) | Err(_) => PPLNS {
+        create_dir_all(home.as_ref().unwrap().join(".aleo_pool_testnet3_2")).unwrap();
+        let db_path = home.unwrap().join(".aleo_pool_testnet3_2/state");
+        if !db_path.exists() {
+            return PPLNS {
                 queue: VecDeque::new(),
                 current_n: Default::default(),
                 n: Default::default(),
-            },
+            };
         }
+        load_file::<PPLNS, PathBuf>(db_path, 0).unwrap()
     }
 
     pub fn save(&self) -> std::result::Result<(), Error> {
@@ -78,7 +79,7 @@ impl PPLNS {
         if home.is_none() {
             panic!("No home directory found");
         }
-        let db_path = home.unwrap().join(".aleo_pool_testnet3_pre2/state");
+        let db_path = home.unwrap().join(".aleo_pool_testnet3_2/state");
         save_file(db_path, 0, self).map_err(|e| anyhow!("Failed to save PPLNS state: {}", e))
     }
 
@@ -119,7 +120,7 @@ struct Null {}
 pub enum AccountingMessage {
     NewShare(String, u64),
     SetN(u64),
-    NewBlock(u32, <Testnet3 as Network>::BlockHash, i64),
+    NewSolution(PuzzleCommitment<Testnet3>),
     Exit,
 }
 
@@ -128,18 +129,16 @@ static PAY_INTERVAL: Duration = Duration::from_secs(60);
 
 #[allow(clippy::type_complexity)]
 pub struct Accounting {
-    operator: String,
     pplns: Arc<TokioRwLock<PPLNS>>,
     #[cfg(feature = "db")]
     database: Arc<DB>,
     sender: Sender<AccountingMessage>,
     round_cache: TokioRwLock<Cache<Null, (u32, HashMap<String, u64>)>>,
-    block_canonical_cache: TokioRwLock<Cache<String, bool>>,
     exit_lock: Arc<AtomicBool>,
 }
 
 impl Accounting {
-    pub fn init(operator: String) -> Arc<Accounting> {
+    pub fn init() -> Arc<Accounting> {
         #[cfg(feature = "db")]
         let database = Arc::new(DB::init());
 
@@ -147,15 +146,12 @@ impl Accounting {
 
         let (sender, mut receiver) = channel(1024);
 
-        let operator_host = operator.split(':').collect::<Vec<&str>>()[0];
         let accounting = Accounting {
-            operator: operator_host.into(),
             pplns,
             #[cfg(feature = "db")]
             database,
             sender,
             round_cache: TokioRwLock::new(Cache::new(Duration::from_secs(10))),
-            block_canonical_cache: TokioRwLock::new(Cache::new(Duration::from_secs(300))),
             exit_lock: Arc::new(AtomicBool::new(false)),
         };
 
@@ -174,15 +170,15 @@ impl Accounting {
                         pplns.write().await.set_n(n);
                         debug!("Set N to {}", n);
                     }
-                    NewBlock(height, block_hash, reward) => {
+                    NewSolution(commitment) => {
                         let pplns = pplns.read().await.clone();
                         let (_, address_shares) = Accounting::pplns_to_provers_shares(&pplns);
 
                         #[cfg(feature = "db")]
-                        if let Err(e) = database.save_block(height, block_hash, reward, address_shares).await {
+                        if let Err(e) = database.save_solution(commitment, address_shares).await {
                             error!("Failed to save block reward : {}", e);
                         } else {
-                            info!("Recorded block {}", height);
+                            info!("Recorded solution {}", commitment);
                         }
                     }
                     Exit => {
@@ -259,171 +255,62 @@ impl Accounting {
         })
     }
 
-    async fn get_latest_block_height(&self) -> Result<u32> {
-        let client = reqwest::Client::new();
-        Ok(client
-            .post(format!("http://{}:3032", self.operator))
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "method": "latestblockheight",
-                "params": [],
-                "id": 1,
-            }))
-            .send()
-            .await?
-            .json::<Value>()
-            .await?["result"]
-            .as_u64()
-            .ok_or_else(|| anyhow!("Unable to get latest block height"))? as u32)
-    }
-
     #[cfg(feature = "db")]
-    async fn update_block_canonical(
-        &self,
-        height: u32,
-        block_hash: String,
-        was_canonical: bool,
-        reward: i64,
-    ) -> Result<bool> {
+    async fn check_solution(&self, commitment: &String) -> Result<bool> {
         let client = reqwest::Client::new();
-        let jsonrpc = json!({
-            "jsonrpc": "2.0",
-            "method": "getminedblockinfo",
-            "id": 1,
-        });
-        let object = match jsonrpc.clone() {
-            Value::Object(object) => object,
-            _ => unreachable!(),
-        };
-        let mut request_json = object;
-        request_json.insert("params".into(), json!([height, block_hash]));
 
         let result = &client
-            .post(format!("http://{}:3032", self.operator))
-            .json(&request_json)
+            .get(format!("http://127.0.0.1:8001/commitment?commitment={}", commitment))
             .send()
             .await?
             .json::<Value>()
-            .await?["result"];
-        let node_canonical = result["canonical"].as_bool().ok_or_else(|| anyhow!("canonical"))?;
-        let value = result["value"].as_i64().ok_or_else(|| anyhow!("value"))?;
-        if node_canonical != was_canonical {
+            .await?;
+        let is_valid = result.as_null().is_none();
+        if is_valid {
             self.database
-                .set_block_canonical(block_hash.clone(), node_canonical)
+                .set_solution_valid(
+                    commitment,
+                    true,
+                    Some(result["height"].as_u64().ok_or_else(|| anyhow!("height"))? as u32),
+                    Some(result["reward"].as_u64().ok_or_else(|| anyhow!("reward"))?),
+                )
                 .await?;
+        } else {
+            self.database.set_solution_valid(commitment, false, None, None).await?;
         }
-        if node_canonical && value != reward {
-            bail!("Block reward mismatch {} {} {}", height, block_hash, reward);
-        }
-        Ok(node_canonical)
-    }
-
-    pub async fn blocks_mined(&self, limit: u16, page: u16, with_shares: bool) -> Result<Value> {
-        if !cfg!(feature = "db") {
-            return Ok(json!({ "blocks": Vec::<Value>::new() }));
-        }
-
-        let latest_block_height: u32 = self.get_latest_block_height().await?;
-        let mut obj = serde_json::Map::new();
-        #[cfg(feature = "db")]
-        let blocks = self.database.get_blocks(limit, page).await?;
-        let shares = match with_shares {
-            true =>
-            {
-                #[cfg(feature = "db")]
-                self.database
-                    .get_block_shares(blocks.iter().map(|b| b.0).collect())
-                    .await?
-            }
-            false => Default::default(),
-        };
-
-        let mut res = Vec::<Value>::with_capacity(limit as usize);
-
-        #[cfg(feature = "db")]
-        for (id, height, block_hash, mut is_canonical, reward) in blocks {
-            let cache_result = self.block_canonical_cache.read().await.get(block_hash.clone());
-            if cache_result.is_none() {
-                is_canonical = self
-                    .update_block_canonical(height, block_hash.clone(), is_canonical, reward)
-                    .await?;
-                self.block_canonical_cache
-                    .write()
-                    .await
-                    .set(block_hash.clone(), is_canonical);
-            }
-            let mut value = json!({
-                "height": height,
-                "block_hash": block_hash.to_string(),
-                "confirmed": if is_canonical {
-                    // TODO: check consensus
-                    true
-                } else {
-                    false
-                },
-                "canonical": is_canonical,
-                "value": if is_canonical { reward } else { 0 },
-            });
-            if with_shares {
-                let data = shares.get(&id);
-                if data == None {
-                    bail!("Missing shares for block {}", id);
-                }
-                value["shares"] = json!(data.unwrap());
-            }
-            res.push(value);
-        }
-
-        obj.insert("blocks".into(), json!(res));
-        Ok(obj.into())
+        Ok(is_valid)
     }
 
     #[cfg(feature = "db")]
     async fn payout_loop(self: Arc<Accounting>) {
-        'indef: loop {
-            let latest_block_height = match self.get_latest_block_height().await {
-                Ok(height) => height,
-                Err(e) => {
-                    error!("Unable to get latest block height: {}", e);
-                    sleep(PAY_INTERVAL).await;
-                    continue;
-                }
-            };
-            let blocks = self.database.get_should_pay_blocks(latest_block_height).await;
+        'forever: loop {
+            info!("Running payout loop");
+            let blocks = self.database.get_should_pay_solutions().await;
             if blocks.is_err() {
                 error!("Unable to get should pay blocks: {}", blocks.unwrap_err());
                 sleep(PAY_INTERVAL).await;
                 continue;
             }
-            for (id, height, block_hash, is_canonical, reward) in blocks.unwrap() {
-                let node_canonical = self
-                    .update_block_canonical(height, block_hash.clone(), is_canonical, reward)
-                    .await;
-                if node_canonical.is_err() {
-                    error!("Unable to update block canonical: {}", node_canonical.unwrap_err());
+            for (id, commitment) in blocks.unwrap() {
+                let valid = self.check_solution(&commitment).await;
+                if valid.is_err() {
+                    error!("Unable to check solution: {}", valid.unwrap_err());
                     sleep(PAY_INTERVAL).await;
-                    continue 'indef;
+                    continue 'forever;
                 }
-                let canonical = node_canonical.unwrap();
-                self.block_canonical_cache
-                    .write()
-                    .await
-                    .set(block_hash.clone(), canonical);
-                if canonical {
-                    match self.database.pay_block(id).await {
+                let valid = valid.unwrap();
+                if valid {
+                    match self.database.pay_solution(id).await {
                         Ok(_) => {
-                            info!("Paid block {} ({})", height, block_hash);
+                            info!("Paid solution {}", commitment);
                         }
                         Err(e) => {
-                            error!("Unable to pay block {}: {}", id, e);
+                            error!("Unable to pay solution {}: {}", id, e);
                             sleep(PAY_INTERVAL).await;
-                            continue 'indef;
+                            continue 'forever;
                         }
                     }
                 }
-            }
-            if let Err(e) = self.database.set_checked_blocks(latest_block_height).await {
-                error!("Unable to set checked blocks: {}", e);
             }
 
             sleep(PAY_INTERVAL).await;

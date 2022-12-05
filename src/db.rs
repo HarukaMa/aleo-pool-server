@@ -13,7 +13,7 @@ use deadpool_postgres::{
     RecyclingMethod,
     Runtime,
 };
-use snarkvm::prelude::{Network, Testnet3};
+use snarkvm::prelude::{PuzzleCommitment, Testnet3};
 use tokio_postgres::NoTls;
 use tracing::warn;
 
@@ -53,7 +53,7 @@ impl DB {
             let schema = schema.clone();
             Box::pin(async move {
                 client
-                    .simple_query(&*format!("set search_path = {}", schema))
+                    .simple_query(&format!("set search_path = {}", schema))
                     .await
                     .map_err(|e| HookError::Abort(HookErrorCause::Backend(e)))?;
                 Ok(())
@@ -65,30 +65,28 @@ impl DB {
         DB { connection_pool: pool }
     }
 
-    pub async fn save_block(
+    pub async fn save_solution(
         &self,
-        height: u32,
-        block_hash: <Testnet3 as Network>::BlockHash,
-        reward: i64,
+        commitment: PuzzleCommitment<Testnet3>,
         shares: HashMap<String, u64>,
     ) -> Result<()> {
         let mut conn = self.connection_pool.get().await?;
         let transaction = conn.transaction().await?;
 
-        let block_id: i32 = transaction
+        let solution_id: i32 = transaction
             .query_one(
-                "INSERT INTO block (height, block_hash, reward) VALUES ($1, $2, $3) RETURNING id",
-                &[&(height as i64), &block_hash.to_string(), &reward],
+                "INSERT INTO solution (commitment) VALUES ($1) RETURNING id",
+                &[&commitment.to_string()],
             )
             .await?
             .try_get("id")?;
 
         let stmt = transaction
-            .prepare_cached("INSERT INTO share (block_id, miner, share) VALUES ($1, $2, $3)")
+            .prepare_cached("INSERT INTO share (solution_id, address, share) VALUES ($1, $2, $3)")
             .await?;
         for (address, share) in shares {
             transaction
-                .query(&stmt, &[&block_id, &address, &(share as i64)])
+                .query(&stmt, &[&solution_id, &address, &(share as i64)])
                 .await?;
         }
 
@@ -96,100 +94,64 @@ impl DB {
         Ok(())
     }
 
-    pub async fn get_blocks(&self, limit: u16, page: u16) -> Result<Vec<(i32, u32, String, bool, i64)>> {
-        let conn = self.connection_pool.get().await?;
-
-        let row = conn.query("SELECT id FROM block ORDER BY id DESC LIMIT 1", &[]).await?;
-        if row.is_empty() {
-            return Ok(vec![]);
-        }
-        let last_id: i32 = row.first().unwrap().get("id");
-        let stmt = conn
-            .prepare_cached("SELECT * FROM block WHERE id <= $1 AND id > $2 ORDER BY id DESC")
-            .await?;
-        let rows = conn
-            .query(&stmt, &[&last_id, &(last_id - page as i32 * limit as i32)])
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let id: i32 = row.get("id");
-                let height: i64 = row.get("height");
-                let block_hash: String = row.get("block_hash");
-                let reward: i64 = row.get("reward");
-                let is_canonical: bool = row.get("is_canonical");
-                (id, height as u32, block_hash, is_canonical, reward)
-            })
-            .collect())
-    }
-
-    pub async fn set_block_canonical(&self, block_hash: String, is_canonical: bool) -> Result<()> {
+    pub async fn set_solution_valid(
+        &self,
+        commitment: &String,
+        valid: bool,
+        height: Option<u32>,
+        reward: Option<u64>,
+    ) -> Result<()> {
         let mut conn = self.connection_pool.get().await?;
         let transaction = conn.transaction().await?;
         let stmt = transaction
-            .prepare_cached("UPDATE block SET is_canonical = $1 WHERE block_hash = $2")
+            .prepare_cached("UPDATE solution SET valid = $1, checked = checked + 1 WHERE commitment = $2")
             .await?;
-        transaction.query(&stmt, &[&is_canonical, &block_hash]).await?;
+        transaction.query(&stmt, &[&valid, commitment]).await?;
+        if valid {
+            transaction
+                .query(
+                    "UPDATE solution SET height = $1, reward = $2 WHERE commitment = $3",
+                    &[&(height.unwrap() as i64), &(reward.unwrap() as i64), commitment],
+                )
+                .await?;
+        }
         transaction.commit().await?;
         Ok(())
     }
 
-    pub async fn get_block_shares(&self, id: Vec<i32>) -> Result<HashMap<i32, HashMap<String, i64>>> {
-        let conn = self.connection_pool.get().await?;
-        let stmt = conn
-            .prepare_cached("SELECT * FROM share WHERE block_id = ANY($1)")
-            .await?;
-
-        let res = conn.query(&stmt, &[&id]).await?;
-        let mut shares = HashMap::new();
-        for row in res {
-            let block_id: i32 = row.get("block_id");
-            let miner: String = row.get("miner");
-            let share: i64 = row.get("share");
-            shares.entry(block_id).or_insert_with(HashMap::new).insert(miner, share);
-        }
-        Ok(shares)
-    }
-
-    pub async fn get_should_pay_blocks(&self, latest_height: u32) -> Result<Vec<(i32, u32, String, bool, i64)>> {
+    pub async fn get_should_pay_solutions(&self) -> Result<Vec<(i32, String)>> {
         let conn = self.connection_pool.get().await?;
         let stmt = conn
             .prepare_cached(
-                "SELECT * FROM block WHERE height <= $1 AND paid = false AND checked = false ORDER BY height",
+                "SELECT * FROM solution WHERE paid = false AND ((valid = false AND checked < 3) OR valid = true) \
+                 ORDER BY id",
             )
             .await?;
-        // leave 4 more blocks for possible reorg
-        // TODO: might not need this anymore on testnet3
-        let rows = conn
-            .query(&stmt, &[&((latest_height as i64).saturating_sub(4100))])
-            .await?;
+        let rows = conn.query(&stmt, &[]).await?;
         Ok(rows
             .into_iter()
             .map(|row| {
                 let id: i32 = row.get("id");
-                let height: i64 = row.get("height");
-                let block_hash: String = row.get("block_hash");
-                let reward: i64 = row.get("reward");
-                let is_canonical: bool = row.get("is_canonical");
-                (id, height as u32, block_hash, is_canonical, reward)
+                let commitment: String = row.get("commitment");
+                (id, commitment)
             })
             .collect())
     }
 
-    pub async fn set_checked_blocks(&self, latest_height: u32) -> Result<()> {
-        let conn = self.connection_pool.get().await?;
-        let stmt = conn
-            .prepare_cached("UPDATE block SET checked = true WHERE height <= $1 AND checked = false")
-            .await?;
-        conn.query(&stmt, &[&((latest_height as i64).saturating_sub(4100))])
-            .await?;
-        Ok(())
-    }
+    // pub async fn set_checked_blocks(&self, latest_height: u32) -> Result<()> {
+    //     let conn = self.connection_pool.get().await?;
+    //     let stmt = conn
+    //         .prepare_cached("UPDATE block SET checked = true WHERE height <= $1 AND checked = false")
+    //         .await?;
+    //     conn.query(&stmt, &[&((latest_height as i64).saturating_sub(4100))])
+    //         .await?;
+    //     Ok(())
+    // }
 
-    pub async fn pay_block(&self, block_id: i32) -> Result<()> {
+    pub async fn pay_solution(&self, solution_id: i32) -> Result<()> {
         let conn = self.connection_pool.get().await?;
-        let stmt = conn.prepare("CALL pay_block($1)").await?;
-        conn.query(&stmt, &[&block_id]).await?;
+        let stmt = conn.prepare("CALL pay_solution($1)").await?;
+        conn.query(&stmt, &[&solution_id]).await?;
         Ok(())
     }
 }

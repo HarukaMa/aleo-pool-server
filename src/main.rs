@@ -111,6 +111,10 @@ async fn main() {
                 "157.245.205.209:4133",
                 "134.122.95.106:4133",
                 "161.35.24.55:4133",
+                "138.68.103.139:4133",
+                "207.154.215.49:4133",
+                "46.101.114.158:4133",
+                "138.197.190.94:4133",
             ];
             bootstrap.choose(&mut rand::thread_rng()).unwrap().to_string()
         }
@@ -119,7 +123,7 @@ async fn main() {
 
     let address = opt.address;
 
-    let accounting = Accounting::init(validator.clone());
+    let accounting = Accounting::init();
 
     let node = Node::init(validator);
 
@@ -129,7 +133,7 @@ async fn main() {
 
     api::start(opt.api_port, accounting.clone(), server.clone());
 
-    match Signals::new(&[SIGABRT, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGTSTP]) {
+    match Signals::new([SIGABRT, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGTSTP]) {
         Ok(signals) => {
             tokio::spawn(handle_signals(signals, accounting.clone(), server.sender()));
         }
