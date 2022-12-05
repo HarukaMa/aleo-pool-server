@@ -172,7 +172,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }
                                             SnarkOSMessage::ChallengeResponse(message) => {
                                                 match message.genesis_header == genesis_header {
-                                                    _ => {
+                                                    true => {
                                                         let was_connected = connected.load(Ordering::SeqCst);
                                                         connected.store(true, Ordering::SeqCst);
                                                         if !was_connected {
