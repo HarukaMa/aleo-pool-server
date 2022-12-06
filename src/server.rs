@@ -147,7 +147,7 @@ impl PoolState {
         self.speed_15m.event(value).await;
         self.speed_30m.event(value).await;
         self.speed_1h.event(value).await;
-        self.next_global_target_modifier = (self.speed_1m.speed().await / 10.0).max(1f64);
+        self.next_global_target_modifier = (self.speed_1m.speed().await / 50.0).max(1f64);
         // todo: make adjustable through admin api
         debug!("pool state add_share took {} us", now.elapsed().as_micros());
     }
