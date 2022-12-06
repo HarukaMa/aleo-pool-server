@@ -154,6 +154,12 @@ impl PoolState {
 
     pub async fn next_global_target_modifier(&mut self) -> f64 {
         self.current_global_target_modifier = self.next_global_target_modifier;
+        if self.current_global_target_modifier > 1.0 {
+            info!(
+                "Current global target modifier: {}",
+                self.current_global_target_modifier
+            );
+        }
         self.current_global_target_modifier
     }
 
@@ -670,7 +676,7 @@ impl Server {
                     send_result(sender, id, true, None, None).await;
                     drop(provers);
                     drop(states);
-                    info!(
+                    debug!(
                         "Received valid proof from prover {} with difficulty {}",
                         prover_display, proof_difficulty
                     );
