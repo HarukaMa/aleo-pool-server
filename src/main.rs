@@ -64,39 +64,39 @@ async fn main() {
     console_subscriber::init();
     dotenv::dotenv().ok();
     let opt = Opt::parse();
-    let tracing_level = if opt.trace {
-        tracing::Level::TRACE
-    } else if opt.debug {
-        tracing::Level::DEBUG
-    } else {
-        tracing::Level::INFO
-    };
-    let _ = LogTracer::init_with_filter(log::LevelFilter::Info);
-    let filter = EnvFilter::from_default_env()
-        .add_directive(tracing_level.into())
-        .add_directive("hyper=info".parse().unwrap())
-        .add_directive("warp=info".parse().unwrap())
-        .add_directive("warp=warn".parse().unwrap())
-        .add_directive("tokio_util=info".parse().unwrap())
-        .add_directive("api".parse().unwrap())
-        .add_directive("tokio=trace".parse().unwrap())
-        .add_directive("runtime=trace".parse().unwrap());
-    let subscriber = tracing_subscriber::fmt::Subscriber::builder()
-        .with_env_filter(filter)
-        .finish();
-    // .with(
-    //     tracing_subscriber::fmt::Layer::default()
-    //         .with_ansi(true)
-    //         .with_writer(std::io::stdout),
-    // );
-    if let Some(log) = opt.log {
-        let file = std::fs::File::create(log).unwrap();
-        let file = tracing_subscriber::fmt::layer().with_writer(file).with_ansi(false);
-        tracing::subscriber::set_global_default(subscriber.with(file))
-            .expect("unable to set global default subscriber");
-    } else {
-        tracing::subscriber::set_global_default(subscriber).expect("unable to set global default subscriber");
-    }
+    // let tracing_level = if opt.trace {
+    //     tracing::Level::TRACE
+    // } else if opt.debug {
+    //     tracing::Level::DEBUG
+    // } else {
+    //     tracing::Level::INFO
+    // };
+    // let _ = LogTracer::init_with_filter(log::LevelFilter::Info);
+    // let filter = EnvFilter::from_default_env()
+    //     .add_directive(tracing_level.into())
+    //     .add_directive("hyper=info".parse().unwrap())
+    //     .add_directive("warp=info".parse().unwrap())
+    //     .add_directive("warp=warn".parse().unwrap())
+    //     .add_directive("tokio_util=info".parse().unwrap())
+    //     .add_directive("api".parse().unwrap())
+    //     .add_directive("tokio=trace".parse().unwrap())
+    //     .add_directive("runtime=trace".parse().unwrap());
+    // let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+    //     .with_env_filter(filter)
+    //     .finish();
+    // // .with(
+    // //     tracing_subscriber::fmt::Layer::default()
+    // //         .with_ansi(true)
+    // //         .with_writer(std::io::stdout),
+    // // );
+    // if let Some(log) = opt.log {
+    //     let file = std::fs::File::create(log).unwrap();
+    //     let file = tracing_subscriber::fmt::layer().with_writer(file).with_ansi(false);
+    //     tracing::subscriber::set_global_default(subscriber.with(file))
+    //         .expect("unable to set global default subscriber");
+    // } else {
+    //     tracing::subscriber::set_global_default(subscriber).expect("unable to set global default subscriber");
+    // }
 
     rayon::ThreadPoolBuilder::new()
         .stack_size(8 * 1024 * 1024)
