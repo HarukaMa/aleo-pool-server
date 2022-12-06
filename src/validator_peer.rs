@@ -172,7 +172,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }
                                             SnarkOSMessage::ChallengeResponse(message) => {
                                                 match message.genesis_header == genesis_header {
-                                                    true => {
+                                                    _ => {
                                                         let was_connected = connected.load(Ordering::SeqCst);
                                                         connected.store(true, Ordering::SeqCst);
                                                         if !was_connected {
@@ -213,6 +213,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     Ok(block_header) => block_header,
                                                     Err(error) => {
                                                         error!("Error deserializing block header: {:?}", error);
+                                                        connected.store(false, Ordering::SeqCst);
                                                         sleep(Duration::from_secs(25)).await;
                                                         break;
                                                     }
@@ -228,6 +229,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                             }
                                             SnarkOSMessage::Disconnect(message) => {
                                                 error!("Peer disconnected: {:?}", message.reason);
+                                                connected.store(false, Ordering::SeqCst);
                                                 sleep(Duration::from_secs(25)).await;
                                                 break;
                                             }
@@ -241,6 +243,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                     }
                                     None => {
                                         error!("Disconnected from operator");
+                                        connected.store(false, Ordering::SeqCst);
                                         sleep(Duration::from_secs(25)).await;
                                         break;
                                     }
