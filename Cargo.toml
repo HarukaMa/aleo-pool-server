@@ -106,6 +106,9 @@ features = ["futures-v0_3"]
 version = "4.0.23"
 features = ["derive"]
 
+[dependencies.console-subscriber]
+version = "0.1.8"
+
 [dev-dependencies]
 criterion= "0.4.0"
 

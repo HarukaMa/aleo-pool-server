@@ -61,6 +61,7 @@ struct Opt {
 
 #[tokio::main]
 async fn main() {
+    console_subscriber::init();
     dotenv::dotenv().ok();
     let opt = Opt::parse();
     let tracing_level = if opt.trace {
@@ -77,7 +78,9 @@ async fn main() {
         .add_directive("warp=info".parse().unwrap())
         .add_directive("warp=warn".parse().unwrap())
         .add_directive("tokio_util=info".parse().unwrap())
-        .add_directive("api".parse().unwrap());
+        .add_directive("api".parse().unwrap())
+        .add_directive("tokio=trace".parse().unwrap())
+        .add_directive("runtime=trace".parse().unwrap());
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
         .with_env_filter(filter)
         .finish();
