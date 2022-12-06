@@ -220,7 +220,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                 };
                                                 let epoch_number = epoch_challenge.epoch_number();
                                                 if let Err(e) = server_sender.send(ServerMessage::NewEpochChallenge(
-                                                    epoch_challenge, block_header.coinbase_target(), block_header.proof_target()
+                                                    epoch_challenge, block_header.proof_target()
                                                 )).await {
                                                     error!("Error sending new block template to pool server: {}", e);
                                                 } else {

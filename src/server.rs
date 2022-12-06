@@ -192,7 +192,7 @@ pub enum ServerMessage {
         KZGCommitment<<Testnet3 as Environment>::PairingCurve>,
         KZGProof<<Testnet3 as Environment>::PairingCurve>,
     ),
-    NewEpochChallenge(EpochChallenge<Testnet3>, u64, u64),
+    NewEpochChallenge(EpochChallenge<Testnet3>, u64),
     Exit,
 }
 
@@ -396,7 +396,7 @@ impl Server {
                 self.connected_provers.write().await.remove(&peer_addr);
                 self.authenticated_provers.write().await.remove(&peer_addr);
             }
-            ServerMessage::NewEpochChallenge(epoch_challenge, coinbase_target, proof_target) => {
+            ServerMessage::NewEpochChallenge(epoch_challenge, proof_target) => {
                 if self.latest_epoch_number.load(Ordering::SeqCst) != epoch_challenge.epoch_number()
                     || epoch_challenge.epoch_number() == 0
                 {
@@ -413,7 +413,7 @@ impl Server {
                 self.latest_proof_target.store(proof_target, Ordering::SeqCst);
                 if let Err(e) = self
                     .accounting_sender
-                    .send(AccountingMessage::SetN(coinbase_target * 5))
+                    .send(AccountingMessage::SetN(proof_target * 5))
                     .await
                 {
                     error!("Error sending accounting message: {}", e);
