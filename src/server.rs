@@ -667,7 +667,7 @@ impl Server {
                     if let Err(e) = accounting_sender
                         .send(AccountingMessage::NewShare(
                             prover_state.read().await.address().to_string(),
-                            proof_difficulty.max(prover_target * 2),
+                            proof_difficulty.min(prover_target * 2),
                         ))
                         .await
                     {
