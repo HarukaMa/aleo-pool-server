@@ -274,7 +274,7 @@ impl Server {
             coinbase_puzzle,
             latest_epoch_number: AtomicU32::new(0),
             latest_epoch_challenge: Default::default(),
-            latest_proof_target: AtomicU64::new(0),
+            latest_proof_target: AtomicU64::new(u64::MAX),
             nonce_seen: Arc::new(FlurryHashSet::with_capacity(10 << 20)),
         });
 
