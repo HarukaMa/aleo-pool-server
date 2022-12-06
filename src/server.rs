@@ -497,8 +497,8 @@ impl Server {
                             error!("Error sending result to prover: {}", e);
                         }
                     }
-                    let states = prover_states.read().await;
                     let provers = authenticated_provers.read().await;
+                    let states = prover_states.read().await;
                     let sender = match provers.get(&peer_addr) {
                         Some(sender) => sender,
                         None => {
