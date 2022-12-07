@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -10,15 +10,7 @@ use futures_util::sink::SinkExt;
 use rand::{rngs::OsRng, Rng};
 use snarkos_account::Account;
 use snarkos_node_messages::{
-    ChallengeRequest,
-    ChallengeResponse,
-    Data,
-    MessageCodec,
-    NodeType,
-    Ping,
-    Pong,
-    PuzzleRequest,
-    PuzzleResponse,
+    ChallengeRequest, ChallengeResponse, Data, MessageCodec, NodeType, Ping, Pong, PuzzleRequest, PuzzleResponse,
 };
 use snarkvm::{
     prelude::{FromBytes, Network, Testnet3},
@@ -110,6 +102,7 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
 
         let rng = &mut OsRng;
         let random_account = Account::new(rng).unwrap();
+        let latest_epoch_number = AtomicU32::new(0);
         loop {
             info!("Connecting to operator...");
             match timeout(Duration::from_secs(5), TcpStream::connect(&node.operator)).await {
@@ -219,6 +212,12 @@ pub fn start(node: Node, server_sender: Sender<ServerMessage>) {
                                                     }
                                                 };
                                                 let epoch_number = epoch_challenge.epoch_number();
+                                                if epoch_number < latest_epoch_number.load(Ordering::SeqCst) {
+                                                    error!("Get new epoch number {} is smaller than latest epoch number", epoch_number);
+                                                    break;
+                                                }else{
+                                                    latest_epoch_number.store(epoch_number, Ordering::SeqCst);
+                                                }
                                                 if let Err(e) = server_sender.send(ServerMessage::NewEpochChallenge(
                                                     epoch_challenge, block_header.proof_target()
                                                 )).await {
