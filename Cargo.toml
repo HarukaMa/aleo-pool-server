@@ -14,9 +14,9 @@ db = [
 
 [dependencies]
 #snarkvm = { path = "../../src/snarkVM" }
-#snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
+snarkvm = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "feat/snarkvm-cuda" }
 #snarkvm-algorithms = { git = "https://github.com/HarukaMa/snarkVM.git", branch = "unchecked" }
-snarkvm = "0.9.9"
+#snarkvm = "0.9.9"
 snarkvm-algorithms = "0.9.9"
 snarkvm-curves = "0.9.9"
 snarkvm-utilities = "0.9.9"
