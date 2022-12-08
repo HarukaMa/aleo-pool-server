@@ -3,7 +3,7 @@ use std::{
     fmt::{Display, Formatter},
     net::SocketAddr,
     sync::{
-        atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
