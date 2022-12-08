@@ -64,8 +64,8 @@ impl ProverState {
             speed_15m: Speedometer::init_with_cache(Duration::from_secs(60 * 15), Duration::from_secs(30)),
             speed_30m: Speedometer::init_with_cache(Duration::from_secs(60 * 30), Duration::from_secs(30)),
             speed_1h: Speedometer::init_with_cache(Duration::from_secs(60 * 60), Duration::from_secs(30)),
-            current_target: 256,
-            next_target: 256,
+            current_target: 512,
+            next_target: 512,
         }
     }
 
