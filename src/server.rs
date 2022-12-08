@@ -397,8 +397,9 @@ impl Server {
                 self.authenticated_provers.write().await.remove(&peer_addr);
             }
             ServerMessage::NewEpochChallenge(epoch_challenge, proof_target) => {
-                if self.latest_epoch_number.load(Ordering::SeqCst) != epoch_challenge.epoch_number()
-                    || epoch_challenge.epoch_number() == 0
+                let latest_epoch = self.latest_epoch_number.load(Ordering::SeqCst);
+                if latest_epoch < epoch_challenge.epoch_number()
+                    || (epoch_challenge.epoch_number() == 0 && latest_epoch == 0)
                 {
                     info!("New epoch challenge: {}", epoch_challenge.epoch_number());
                     self.latest_epoch_number
@@ -408,6 +409,9 @@ impl Server {
                         .await
                         .replace(epoch_challenge.clone());
                     self.clear_nonce();
+                }
+                if epoch_challenge.epoch_number() < latest_epoch {
+                    return;
                 }
                 info!("Updating target to {}", proof_target);
                 self.latest_proof_target.store(proof_target, Ordering::SeqCst);
