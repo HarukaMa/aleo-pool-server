@@ -81,7 +81,9 @@ impl ProverState {
     }
 
     pub async fn next_target(&mut self) -> u64 {
-        if self.next_target < self.current_target * 0.9 || self.next_target > self.current_target * 1.1 {
+        if self.next_target < ((self.current_target as f64) * 0.9) as u64
+            || self.next_target > ((self.current_target as f64) * 1.1) as u64
+        {
             self.current_target = self.next_target;
         }
         self.current_target
